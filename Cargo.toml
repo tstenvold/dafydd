@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 pyo3 = { version = "0.28", features = ["extension-module", "macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
 serialport = "4"
-nusb = "0.1"
+nusb = "0.2"
 if-addrs = "0.13"
 ipnet = "2"
 thiserror = "2"
