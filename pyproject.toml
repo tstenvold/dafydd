@@ -1,0 +1,23 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "dafydd"
+version = "0.1.0"
+description = "Device discovery over Serial, USB, and TCP/IP"
+requires-python = ">=3.11"
+license = { text = "MIT OR Apache-2.0" }
+keywords = ["serial", "usb", "tcp", "discovery", "hardware"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Hardware",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-timeout"]
+
+[tool.maturin]
+python-source = "python"
+features = ["pyo3/extension-module"]

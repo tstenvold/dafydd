@@ -1,0 +1,46 @@
+name: Fast CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    name: Test (Rust & Python)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.13"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Ensure Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Setup Python
+      run: uv python install ${{ matrix.python-version }}
+
+    - name: Check Rust formatting
+      run: cargo fmt -- --check
+
+    - name: Rust Lints (Clippy)
+      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+    - name: Run Native Rust Tests
+      run: cargo test
+
+    - name: Build and Install Wheel
+      run: uv run maturin develop
+      
+    - name: Run Python Pytest Integration
+      run: uv run pytest tests/ -v

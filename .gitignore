@@ -1,0 +1,12 @@
+/target/
+*.egg-info/
+dist/
+__pycache__/
+*.so
+*.pyd
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.profraw
+*.profdata
+Coverage.xml
