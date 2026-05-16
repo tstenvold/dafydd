@@ -2,6 +2,7 @@
 
 use crate::{
     error::DafyddError,
+    runtime::runtime,
     types::{DeviceMatch, Transport},
 };
 use pyo3::prelude::*;
@@ -38,9 +39,11 @@ impl UsbDiscovery {
         let vid = self.vid;
         let pid = self.pid;
 
-        py.allow_threads(|| {
+        py.detach(|| {
             let inner = || -> crate::error::Result<Vec<DeviceMatch>> {
-                let devices = nusb::list_devices().map_err(|e| DafyddError::Usb(e.to_string()))?;
+                let devices = runtime()
+                    .block_on(async { nusb::list_devices().await })
+                    .map_err(|e| DafyddError::Usb(e.to_string()))?;
 
                 let mut matches = Vec::new();
                 for device in devices {

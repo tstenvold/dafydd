@@ -89,7 +89,7 @@ impl SerialDiscovery {
         let preferred = self.preferred_port.clone();
         let include_bluetooth = self.include_bluetooth;
 
-        py.allow_threads(|| {
+        py.detach(|| {
             match runtime().block_on(async move {
                 if let Some(port) = preferred {
                     if let Ok(Some(m)) =

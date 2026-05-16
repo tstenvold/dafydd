@@ -90,7 +90,7 @@ impl TcpDiscovery {
         let max_concurrent = self.max_concurrent;
         let preferred = self.preferred_host.clone();
 
-        py.allow_threads(|| {
+        py.detach(|| {
             match runtime().block_on(async move {
                 if let Some(host) = preferred {
                     if let Ok(Some(m)) =

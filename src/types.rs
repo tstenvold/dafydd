@@ -9,7 +9,7 @@ use std::{
 };
 
 /// Token that can be used to cancel ongoing discovery operations.
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct CancellationToken {
     inner: Arc<AtomicBool>,
@@ -68,7 +68,7 @@ impl CancellationToken {
 }
 
 /// Which physical transport was used to discover the device.
-#[pyclass(eq, eq_int)]
+#[pyclass(eq, eq_int, from_py_object)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Transport {
     /// RS-232 / RS-485 serial port.
@@ -80,7 +80,7 @@ pub enum Transport {
 }
 
 /// A device found during discovery.
-#[pyclass(get_all)]
+#[pyclass(get_all, from_py_object)]
 #[derive(Debug, Clone)]
 pub struct DeviceMatch {
     /// Transport layer that found this device.

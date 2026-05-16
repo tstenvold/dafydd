@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "dafydd"
 version = "0.1.0"
 description = "Device discovery over Serial, USB, and TCP/IP"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["serial", "usb", "tcp", "discovery", "hardware"]
