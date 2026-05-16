@@ -10,10 +10,6 @@ rust-version = "1.95"
 name = "dafydd"
 crate-type = ["cdylib", "rlib"]
 
-[[bin]]
-name = "dafydd"
-path = "src/main.rs"
-
 [dependencies]
 pyo3 = { version = "0.22", features = ["extension-module", "macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }

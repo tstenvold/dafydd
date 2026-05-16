@@ -16,16 +16,22 @@ pub struct CancellationToken {
 }
 
 impl CancellationToken {
+    /// Create a new cancellation token.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(AtomicBool::new(false)),
         }
     }
 
+    /// Check if cancellation has been requested.
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.inner.load(Ordering::Relaxed)
     }
 
+    /// Get a reference to the inner atomic bool.
+    #[must_use]
     pub fn inner(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.inner)
     }
@@ -41,7 +47,7 @@ impl Default for CancellationToken {
 impl CancellationToken {
     /// Create a new cancellation token.
     #[new]
-    fn new() -> Self {
+    fn py_new() -> Self {
         Self::new()
     }
 
@@ -51,8 +57,8 @@ impl CancellationToken {
     }
 
     /// Check if cancellation has been requested.
-    fn is_cancelled(&self) -> bool {
-        self.inner.load(Ordering::Relaxed)
+    fn py_is_cancelled(&self) -> bool {
+        self.is_cancelled()
     }
 
     /// Reset the token for reuse.

@@ -7,16 +7,21 @@ name = "dafydd"
 version = "0.1.0"
 description = "Device discovery over Serial, USB, and TCP/IP"
 requires-python = ">=3.11"
-license = { text = "MIT OR Apache-2.0" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["serial", "usb", "tcp", "discovery", "hardware"]
 classifiers = [
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: System :: Hardware",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-timeout"]
+dev = ["maturin>=1.7,<2", "pytest>=8.0", "pytest-timeout", "ruff", "pyright"]
 
 [tool.maturin]
 python-source = "python"

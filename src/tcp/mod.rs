@@ -2,11 +2,9 @@
 
 pub mod scan;
 
-use crate::{runtime::runtime, types::{DeviceMatch, CancellationToken}};
+use crate::{runtime::runtime, types::DeviceMatch};
 use pyo3::prelude::*;
 use std::time::Duration;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 /// Discovers devices reachable over TCP/IP.
 ///

@@ -166,7 +166,7 @@ pub async fn sweep_all_ports(
         ports.retain(|p| {
             p.port_name
                 .strip_prefix("/dev/tty.")
-                .map_or(true, |suffix| !cu_suffixes.contains(suffix))
+                .is_none_or(|suffix| !cu_suffixes.contains(suffix))
         });
     }
 

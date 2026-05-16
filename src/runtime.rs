@@ -19,7 +19,7 @@ fn thread_name() -> String {
 /// Returns the process-wide Tokio multi-thread runtime.
 ///
 /// Initialised on first call and reused for the lifetime of the process.
-/// 
+///
 /// # Panics
 /// Panics if the runtime cannot be built (should never occur in practice).
 pub fn runtime() -> &'static Runtime {
@@ -33,9 +33,7 @@ pub fn runtime() -> &'static Runtime {
             .thread_stack_size(2 * 1024 * 1024)
             .enable_all()
             .build()
-            .unwrap_or_else(|e| {
-                panic!("failed to build Tokio runtime with {threads} threads: {e}")
-            })
+            .unwrap_or_else(|e| panic!("failed to build Tokio runtime with {threads} threads: {e}"))
     })
 }
 
