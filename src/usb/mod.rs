@@ -13,6 +13,9 @@ use std::collections::HashMap;
 pub struct UsbDiscovery {
     vid: Option<u16>,
     pid: Option<u16>,
+    manufacturer: Option<String>,
+    product_string: Option<String>,
+    serial_number: Option<String>,
 }
 
 #[pymethods]
@@ -24,9 +27,21 @@ impl UsbDiscovery {
     ///   `pid`: Optional USB Product ID filter (e.g. `0x5678`).
     #[must_use]
     #[new]
-    #[pyo3(signature = (vid = None, pid = None))]
-    pub const fn new(vid: Option<u16>, pid: Option<u16>) -> Self {
-        Self { vid, pid }
+    #[pyo3(signature = (vid = None, pid = None, manufacturer = None, product_string = None, serial_number = None))]
+    pub const fn new(
+        vid: Option<u16>,
+        pid: Option<u16>,
+        manufacturer: Option<String>,
+        product_string: Option<String>,
+        serial_number: Option<String>,
+    ) -> Self {
+        Self {
+            vid,
+            pid,
+            manufacturer,
+            product_string,
+            serial_number,
+        }
     }
 
     /// Return all connected USB devices matching the configured filters.
@@ -38,6 +53,9 @@ impl UsbDiscovery {
     pub fn discover(&self, py: Python<'_>) -> PyResult<Vec<DeviceMatch>> {
         let vid = self.vid;
         let pid = self.pid;
+        let mfg_filter = self.manufacturer.clone();
+        let prod_filter = self.product_string.clone();
+        let sn_filter = self.serial_number.clone();
 
         py.detach(|| {
             let inner = || -> crate::error::Result<Vec<DeviceMatch>> {
@@ -52,6 +70,30 @@ impl UsbDiscovery {
                     }
                     if pid.is_some_and(|p| device.product_id() != p) {
                         continue;
+                    }
+                    if let Some(m_filter) = &mfg_filter {
+                        if !device
+                            .manufacturer_string()
+                            .is_some_and(|m| m.contains(m_filter))
+                        {
+                            continue;
+                        }
+                    }
+                    if let Some(p_filter) = &prod_filter {
+                        if !device
+                            .product_string()
+                            .is_some_and(|p| p.contains(p_filter))
+                        {
+                            continue;
+                        }
+                    }
+                    if let Some(sn_filter) = &sn_filter {
+                        if !device
+                            .serial_number()
+                            .is_some_and(|sn| sn.contains(sn_filter))
+                        {
+                            continue;
+                        }
                     }
 
                     let mut info: HashMap<String, String> = HashMap::with_capacity(6);

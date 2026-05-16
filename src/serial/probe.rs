@@ -25,13 +25,70 @@ use tokio::task::JoinSet;
 ///
 /// Returns [`DafyddError::Serial`] if the port cannot be opened.
 /// Returns [`DafyddError::Io`] if the write fails.
+#[allow(clippy::too_many_arguments)]
 pub fn probe_port(
     port: &str,
     baud: u32,
     probe: &[u8],
     timeout: Duration,
+    data_bits: Option<u8>,
+    parity: Option<&str>,
+    stop_bits: Option<u8>,
+    flow_control: Option<&str>,
 ) -> Result<Option<DeviceMatch>> {
+    let db = match data_bits {
+        Some(5) => serialport::DataBits::Five,
+        Some(6) => serialport::DataBits::Six,
+        Some(7) => serialport::DataBits::Seven,
+        Some(8) | None => serialport::DataBits::Eight,
+        _ => {
+            return Err(DafyddError::Serial(serialport::Error::new(
+                serialport::ErrorKind::InvalidInput,
+                "Invalid data bits",
+            )))
+        }
+    };
+
+    let par = match parity.unwrap_or("none") {
+        "even" => serialport::Parity::Even,
+        "odd" => serialport::Parity::Odd,
+        "none" => serialport::Parity::None,
+        _ => {
+            return Err(DafyddError::Serial(serialport::Error::new(
+                serialport::ErrorKind::InvalidInput,
+                "Invalid parity",
+            )))
+        }
+    };
+
+    let sb = match stop_bits {
+        Some(1) | None => serialport::StopBits::One,
+        Some(2) => serialport::StopBits::Two,
+        _ => {
+            return Err(DafyddError::Serial(serialport::Error::new(
+                serialport::ErrorKind::InvalidInput,
+                "Invalid stop bits",
+            )))
+        }
+    };
+
+    let fc = match flow_control.unwrap_or("none") {
+        "hardware" => serialport::FlowControl::Hardware,
+        "software" => serialport::FlowControl::Software,
+        "none" => serialport::FlowControl::None,
+        _ => {
+            return Err(DafyddError::Serial(serialport::Error::new(
+                serialport::ErrorKind::InvalidInput,
+                "Invalid flow control",
+            )))
+        }
+    };
+
     let mut serial = serialport::new(port, baud)
+        .data_bits(db)
+        .parity(par)
+        .stop_bits(sb)
+        .flow_control(fc)
         .timeout(timeout)
         .open()
         .map_err(DafyddError::Serial)?;
@@ -87,17 +144,31 @@ pub fn probe_port(
 /// Returns [`DafyddError::Serial`] for unexpected port enumeration failures.
 /// Simple open errors and I/O errors are silently skipped so every baud rate
 /// gets a chance.
+#[allow(clippy::too_many_arguments)]
 pub async fn probe_port_all_bauds(
     port: String,
     bauds: Vec<u32>,
     probe: Vec<u8>,
     timeout: Duration,
+    data_bits: Option<u8>,
+    parity: Option<String>,
+    stop_bits: Option<u8>,
+    flow_control: Option<String>,
 ) -> Result<Option<DeviceMatch>> {
     // A single spawn_blocking call owns the port handle for the duration of
     // the sequential baud scan, avoiding repeated open/close overhead.
     let result = tokio::task::spawn_blocking(move || {
         for baud in bauds {
-            if let Ok(Some(m)) = probe_port(&port, baud, &probe, timeout) {
+            if let Ok(Some(m)) = probe_port(
+                &port,
+                baud,
+                &probe,
+                timeout,
+                data_bits,
+                parity.as_deref(),
+                stop_bits,
+                flow_control.as_deref(),
+            ) {
                 return Ok(Some(m));
             }
         }
@@ -137,11 +208,16 @@ pub async fn probe_port_all_bauds(
 /// # Errors
 ///
 /// Returns [`DafyddError::Serial`] if the system port list cannot be read.
+#[allow(clippy::too_many_arguments)]
 pub async fn sweep_all_ports(
     probe: &[u8],
     baud_rates: &[u32],
     timeout: Duration,
     include_bluetooth: bool,
+    data_bits: Option<u8>,
+    parity: Option<String>,
+    stop_bits: Option<u8>,
+    flow_control: Option<String>,
 ) -> Result<Vec<DeviceMatch>> {
     let mut ports = serialport::available_ports().map_err(DafyddError::Serial)?;
 
@@ -175,7 +251,21 @@ pub async fn sweep_all_ports(
         let port = port_info.port_name.clone();
         let bauds = baud_rates.to_vec();
         let probe = probe.to_vec();
-        set.spawn(async move { probe_port_all_bauds(port, bauds, probe, timeout).await });
+        let parity = parity.clone();
+        let flow_control = flow_control.clone();
+        set.spawn(async move {
+            probe_port_all_bauds(
+                port,
+                bauds,
+                probe,
+                timeout,
+                data_bits,
+                parity,
+                stop_bits,
+                flow_control,
+            )
+            .await
+        });
     }
 
     let mut matches = Vec::new();

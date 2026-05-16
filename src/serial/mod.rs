@@ -32,6 +32,10 @@ pub struct SerialDiscovery {
     timeout_ms: u64,
     preferred_port: Option<String>,
     include_bluetooth: bool,
+    data_bits: Option<u8>,
+    parity: Option<String>,
+    stop_bits: Option<u8>,
+    flow_control: Option<String>,
 }
 
 #[pymethods]
@@ -55,13 +59,22 @@ impl SerialDiscovery {
         timeout_ms = 500,
         preferred_port = None,
         include_bluetooth = false,
+        data_bits = None,
+        parity = None,
+        stop_bits = None,
+        flow_control = None,
     ))]
+    #[allow(clippy::too_many_arguments)]
     pub const fn new(
         probe_command: Vec<u8>,
         baud_rates: Vec<u32>,
         timeout_ms: u64,
         preferred_port: Option<String>,
         include_bluetooth: bool,
+        data_bits: Option<u8>,
+        parity: Option<String>,
+        stop_bits: Option<u8>,
+        flow_control: Option<String>,
     ) -> Self {
         Self {
             probe_command,
@@ -69,6 +82,10 @@ impl SerialDiscovery {
             timeout_ms,
             preferred_port,
             include_bluetooth,
+            data_bits,
+            parity,
+            stop_bits,
+            flow_control,
         }
     }
 
@@ -88,19 +105,41 @@ impl SerialDiscovery {
         let timeout = Duration::from_millis(self.timeout_ms);
         let preferred = self.preferred_port.clone();
         let include_bluetooth = self.include_bluetooth;
+        let data_bits = self.data_bits;
+        let parity = self.parity.clone();
+        let stop_bits = self.stop_bits;
+        let flow_control = self.flow_control.clone();
 
         py.detach(|| {
             match runtime().block_on(async move {
                 if let Some(port) = preferred {
-                    if let Ok(Some(m)) =
-                        probe::probe_port_all_bauds(port, bauds.clone(), probe.clone(), timeout)
-                            .await
+                    if let Ok(Some(m)) = probe::probe_port_all_bauds(
+                        port,
+                        bauds.clone(),
+                        probe.clone(),
+                        timeout,
+                        data_bits,
+                        parity.clone(),
+                        stop_bits,
+                        flow_control.clone(),
+                    )
+                    .await
                     {
                         return Ok(vec![m]);
                     }
                 }
 
-                probe::sweep_all_ports(&probe, &bauds, timeout, include_bluetooth).await
+                probe::sweep_all_ports(
+                    &probe,
+                    &bauds,
+                    timeout,
+                    include_bluetooth,
+                    data_bits,
+                    parity,
+                    stop_bits,
+                    flow_control,
+                )
+                .await
             }) {
                 Ok(v) => Ok(v),
                 Err(e) => Err(PyErr::from(e)),

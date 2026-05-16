@@ -1,6 +1,6 @@
 //! Shared Python-visible types returned by all discovery transports.
 
-use pyo3::prelude::*;
+use pyo3::{prelude::*, types::PyDict};
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
@@ -147,6 +147,87 @@ impl DeviceMatch {
 
     fn __lt__(&self, other: &Self) -> bool {
         self.address < other.address
+    }
+
+    /// For Serial transport: baud rate confirmed during discovery.
+    #[getter]
+    fn baud_rate(&self) -> Option<u32> {
+        self.info.get("baud_rate").and_then(|s| s.parse().ok())
+    }
+
+    /// For TCP transport: hostname or IP address part of the connection address.
+    #[getter]
+    fn host(&self) -> Option<String> {
+        match self.transport {
+            Transport::Tcp => self.address.rsplit_once(':').map(|(h, _)| h.to_string()),
+            _ => None,
+        }
+    }
+
+    /// For TCP transport: port number part of the connection address.
+    #[getter]
+    fn port(&self) -> Option<u16> {
+        match self.transport {
+            Transport::Tcp => self
+                .address
+                .rsplit_once(':')
+                .and_then(|(_, p)| p.parse().ok()),
+            _ => None,
+        }
+    }
+
+    /// For USB transport: vendor ID as an integer.
+    #[getter]
+    fn vendor_id(&self) -> Option<u16> {
+        match self.transport {
+            Transport::Usb => self
+                .address
+                .split_once(':')
+                .and_then(|(v, _)| u16::from_str_radix(v.trim_start_matches("0x"), 16).ok()),
+            _ => None,
+        }
+    }
+
+    /// For USB transport: product ID as an integer.
+    #[getter]
+    fn product_id(&self) -> Option<u16> {
+        match self.transport {
+            Transport::Usb => self
+                .address
+                .split_once(':')
+                .and_then(|(_, p)| u16::from_str_radix(p.trim_start_matches("0x"), 16).ok()),
+            _ => None,
+        }
+    }
+
+    /// Return keyword arguments for the matching python-bus factory function.
+    fn bus_params<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        match self.transport {
+            Transport::Serial => {
+                d.set_item("port", &self.address)?;
+                if let Some(br) = self.baud_rate() {
+                    d.set_item("baudrate", br)?;
+                }
+            }
+            Transport::Tcp => {
+                if let Some(h) = self.host() {
+                    d.set_item("host", h)?;
+                }
+                if let Some(p) = self.port() {
+                    d.set_item("port", p)?;
+                }
+            }
+            Transport::Usb => {
+                if let Some(v) = self.vendor_id() {
+                    d.set_item("vendor", v)?;
+                }
+                if let Some(p) = self.product_id() {
+                    d.set_item("product", p)?;
+                }
+            }
+        }
+        Ok(d)
     }
 }
 
