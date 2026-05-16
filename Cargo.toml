@@ -11,7 +11,7 @@ name = "dafydd"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module", "macros"] }
+pyo3 = { version = "0.24", features = ["extension-module", "macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
 serialport = "4"
 nusb = "0.1"

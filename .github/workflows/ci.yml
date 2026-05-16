@@ -44,13 +44,13 @@ jobs:
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
       - name: Python formatting check
-        run: uv run ruff format tests/ python/ --check
+        run: uv run --with ruff ruff format tests/ python/ --check
 
       - name: Python linting
-        run: uv run ruff check tests/ python/
+        run: uv run --with ruff ruff check tests/ python/
 
       - name: Python type checking
-        run: uv run pyright tests/ python/
+        run: uv run --with pyright pyright tests/ python/
 
   # ============================================================================
   # Test: Build and run tests on all platforms/Python versions
@@ -83,10 +83,11 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install socat
 
-      - name: Sync and build
-        run: |
-          uv sync
-          uv run maturin develop --release
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Build Python bindings
+        run: uv run --with maturin maturin develop --release
 
       - name: Run Rust tests
         run: cargo test --lib --tests
@@ -118,16 +119,14 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Generate Rust coverage
-        run: cargo llvm-cov --lib --tests --lcov --output-path lcov.info
+      - name: Sync dependencies
+        run: uv sync
 
       - name: Build Python bindings
-        run: |
-          uv sync
-          uv run maturin develop --release
+        run: uv run --with maturin maturin develop --release
 
-      - name: Generate Python + Rust combined coverage
-        run: cargo llvm-cov --lib --tests --no-report --lcov --output-path lcov.info
+      - name: Generate Rust + Python coverage
+        run: cargo llvm-cov --lib --tests --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

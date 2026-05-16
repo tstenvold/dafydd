@@ -10,3 +10,5 @@ __pycache__/
 *.profraw
 *.profdata
 Coverage.xml
+uv.lock
+lcov.info
