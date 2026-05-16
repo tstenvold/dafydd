@@ -13,7 +13,7 @@ fn bench_usb_scan(c: &mut Criterion) {
         b.iter(|| {
             // Evaluates how fast the underlying OS USB bus can be iterated.
             let res = nusb::list_devices();
-            criterion::black_box(res)
+            std::hint::black_box(res)
         });
     });
 }

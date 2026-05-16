@@ -73,7 +73,7 @@ fn bench_tcp_scan(c: &mut Criterion) {
                         )
                         .await
                         .expect("scan failed");
-                        criterion::black_box(matches)
+                        std::hint::black_box(matches)
                     }
                 });
             },
@@ -96,7 +96,7 @@ fn bench_tcp_scan(c: &mut Criterion) {
                 )
                 .await
                 .expect("scan failed");
-                criterion::black_box(matches)
+                std::hint::black_box(matches)
             }
         });
     });

@@ -18,7 +18,7 @@ fn bench_serial_scan(c: &mut Criterion) {
                 b"ping",
                 Duration::from_millis(10),
             );
-            criterion::black_box(res)
+            std::hint::black_box(res)
         });
     });
 
@@ -32,7 +32,7 @@ fn bench_serial_scan(c: &mut Criterion) {
                 Duration::from_millis(5),
             )
             .await;
-            criterion::black_box(res)
+            std::hint::black_box(res)
         });
     });
 }

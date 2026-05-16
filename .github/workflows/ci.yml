@@ -50,7 +50,7 @@ jobs:
         run: uv run --with ruff ruff check tests/ python/
 
       - name: Python type checking
-        run: uv run --with pyright pyright tests/ python/
+        run: uv run --with pyright --with pytest pyright tests/ python/
 
   # ============================================================================
   # Test: Build and run tests on all platforms/Python versions
@@ -87,7 +87,7 @@ jobs:
         run: brew install socat
 
       - name: Sync dependencies
-        run: uv sync
+        run: uv sync --extra dev
 
       - name: Build Python bindings
         run: uv run --with maturin maturin develop --release
@@ -123,7 +123,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Sync dependencies
-        run: uv sync
+        run: uv sync --extra dev
 
       - name: Build Python bindings
         run: uv run --with maturin maturin develop --release
