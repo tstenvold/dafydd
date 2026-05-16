@@ -17,10 +17,10 @@ _tests_dir = os.path.dirname(os.path.abspath(__file__))
 if _tests_dir not in sys.path:
     sys.path.insert(0, _tests_dir)
 
-import pytest
+import pytest  # noqa: E402
 
-import dafydd
-from fixtures.platform import (
+import dafydd  # noqa: E402
+from fixtures.platform import (  # noqa: E402
     get_platform_info,
     is_linux,
     is_macos,
@@ -28,7 +28,6 @@ from fixtures.platform import (
     supports_virtual_serial_ports,
     Platform,
 )
-from fixtures.serial_simulator import SerialDeviceConfig
 
 
 # ============================================================================
@@ -226,6 +225,7 @@ class TestPlatformDetection:
 
         # Verify the platform matches what we'd expect from platform.system()
         import platform
+
         system = platform.system().lower()
 
         if system == "darwin":

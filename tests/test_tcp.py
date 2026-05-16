@@ -102,7 +102,7 @@ class TestTcpDiscoveryGoldenCase:
             port=unused_port,
             probe_command=b"STATUS?",
             response=b"DEVICE_READY",
-        ) as device:
+        ) as _:
             # Note: expected_response param may not be exposed in Python API
             # Testing with probe_command only
             discovery = dafydd.TcpDiscovery(
@@ -124,7 +124,7 @@ class TestTcpDiscoveryGoldenCase:
             host="127.0.0.1",
             port=unused_port,
             response=b"OK",
-        ) as device:
+        ) as _:
             discovery = dafydd.TcpDiscovery(
                 port=unused_port,
                 subnets=[],
@@ -146,7 +146,7 @@ class TestTcpDiscoveryFoundCase:
             host="127.0.0.1",
             port=unused_port,
             response=b"READY",
-        ) as device:
+        ) as _:
             discovery = dafydd.TcpDiscovery(
                 port=unused_port,
                 subnets=["127.0.0.1/32"],
@@ -163,9 +163,10 @@ class TestTcpDiscoveryFoundCase:
         port1 = unused_port
         port2 = unused_port + 1
 
-        with make_tcp_device(host="127.0.0.1", port=port1, response=b"DEV1"), \
-             make_tcp_device(host="127.0.0.1", port=port2, response=b"DEV2"):
-
+        with (
+            make_tcp_device(host="127.0.0.1", port=port1, response=b"DEV1"),
+            make_tcp_device(host="127.0.0.1", port=port2, response=b"DEV2"),
+        ):
             discovery = dafydd.TcpDiscovery(
                 port=port1,
                 subnets=["127.0.0.1/32"],
@@ -271,7 +272,7 @@ class TestTcpDiscoveryEdgeCases:
             host="127.0.0.1",
             port=unused_port,
             response=b"OK",
-        ) as device:
+        ) as _:
             discovery = dafydd.TcpDiscovery(
                 port=unused_port,
                 subnets=[],
@@ -288,7 +289,7 @@ class TestTcpDiscoveryEdgeCases:
             port=unused_port,
             probe_command=b"PING",
             response=b"PONG",
-        ) as device:
+        ) as _:
             discovery = dafydd.TcpDiscovery(
                 port=unused_port,
                 subnets=["127.0.0.1/32"],
@@ -306,7 +307,7 @@ class TestTcpDiscoveryEdgeCases:
             host="127.0.0.1",
             port=unused_port,
             response=b"DATA",
-        ) as device:
+        ) as _:
             discovery = dafydd.TcpDiscovery(
                 port=unused_port,
                 subnets=["127.0.0.1/32"],
@@ -334,7 +335,7 @@ class TestTcpDiscoveryEdgeCases:
             host="127.0.0.1",
             port=unused_port,
             response=b"OK",
-        ) as device:
+        ) as _:
             discovery = dafydd.TcpDiscovery(
                 port=unused_port,
                 subnets=[],

@@ -95,6 +95,29 @@ pub struct DeviceMatch {
 
 #[pymethods]
 impl DeviceMatch {
+    /// Create a new [`DeviceMatch`].
+    ///
+    /// Args:
+    ///   `transport`: Transport layer that found this device.
+    ///   `address`: Human-readable address.
+    ///   `response`: Raw bytes returned by the device.
+    ///   `info`: Transport-specific metadata.
+    #[new]
+    #[pyo3(signature = (transport, address, response = None, info = None))]
+    pub fn new(
+        transport: Transport,
+        address: String,
+        response: Option<Vec<u8>>,
+        info: Option<HashMap<String, String>>,
+    ) -> Self {
+        Self {
+            transport,
+            address,
+            response,
+            info: info.unwrap_or_default(),
+        }
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "DeviceMatch(transport={:?}, address={:?}, response={:?}, info={:?})",

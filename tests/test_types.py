@@ -1,7 +1,5 @@
 """Tests for device types and transport enum."""
 
-import pytest
-
 import dafydd
 
 
@@ -29,7 +27,9 @@ class TestDeviceMatch:
 
     def test_device_match_from_discovery(self):
         """Test DeviceMatch returned from discovery."""
-        discovery = dafydd.TcpDiscovery(port=9999, subnets=["127.0.0.1/32"], timeout_ms=100)
+        discovery = dafydd.TcpDiscovery(
+            port=9999, subnets=["127.0.0.1/32"], timeout_ms=100
+        )
         results = discovery.discover()
         assert isinstance(results, list)
 
@@ -56,14 +56,16 @@ class TestDeviceMatch:
         time.sleep(0.1)
 
         try:
-            discovery = dafydd.TcpDiscovery(port=port, subnets=["127.0.0.1/32"], timeout_ms=1000)
+            discovery = dafydd.TcpDiscovery(
+                port=port, subnets=["127.0.0.1/32"], timeout_ms=1000
+            )
             results = discovery.discover()
             assert len(results) == 1
             match = results[0]
-            assert hasattr(match, 'transport')
-            assert hasattr(match, 'address')
-            assert hasattr(match, 'info')
-            assert hasattr(match, 'response')
+            assert hasattr(match, "transport")
+            assert hasattr(match, "address")
+            assert hasattr(match, "info")
+            assert hasattr(match, "response")
             assert match.transport == dafydd.Transport.Tcp
             assert f"127.0.0.1:{port}" == match.address
         finally:
@@ -92,7 +94,9 @@ class TestDeviceMatch:
         time.sleep(0.1)
 
         try:
-            discovery = dafydd.TcpDiscovery(port=port, subnets=["127.0.0.1/32"], timeout_ms=1000)
+            discovery = dafydd.TcpDiscovery(
+                port=port, subnets=["127.0.0.1/32"], timeout_ms=1000
+            )
             results = discovery.discover()
             assert len(results) == 1
             repr_str = repr(results[0])
@@ -131,7 +135,9 @@ class TestDeviceMatch:
         time.sleep(0.2)
 
         try:
-            discovery = dafydd.TcpDiscovery(port=ports[0], subnets=["127.0.0.1/32"], timeout_ms=1000)
+            discovery = dafydd.TcpDiscovery(
+                port=ports[0], subnets=["127.0.0.1/32"], timeout_ms=1000
+            )
             results = discovery.discover()
             # Sort by address
             sorted_results = sorted(results)
@@ -195,7 +201,13 @@ class TestModuleImports:
 
     def test_all_in_all(self):
         """Test __all__ contains all expected items."""
-        expected = ["DeviceMatch", "SerialDiscovery", "TcpDiscovery", "Transport", "UsbDiscovery"]
+        expected = [
+            "DeviceMatch",
+            "SerialDiscovery",
+            "TcpDiscovery",
+            "Transport",
+            "UsbDiscovery",
+        ]
         for name in expected:
             assert name in dafydd.__all__
 

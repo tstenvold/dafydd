@@ -13,9 +13,8 @@ import socket
 import sys
 import threading
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Generator, Optional
+from typing import Optional
 
 import pytest
 
@@ -24,19 +23,14 @@ _tests_dir = os.path.dirname(os.path.abspath(__file__))
 if _tests_dir not in sys.path:
     sys.path.insert(0, _tests_dir)
 
-from fixtures.platform import (
+from fixtures.platform import (  # noqa: E402
     Platform,
     get_platform_info,
-    is_linux,
-    is_macos,
-    is_windows,
-    is_arm,
     is_ci,
     supports_virtual_serial_ports,
 )
-from fixtures.serial_simulator import (
+from fixtures.serial_simulator import (  # noqa: E402
     SerialDeviceConfig,
-    SerialSimulatorFactory,
     serial_device,
 )
 
@@ -133,6 +127,7 @@ def is_ci_environment():
 @dataclass
 class MockTcpDevice:
     """Configuration for a mock TCP device."""
+
     host: str
     port: int
     probe_command: bytes = b""
@@ -215,6 +210,7 @@ class MockTcpServer:
 @dataclass
 class MockSerialDevice:
     """Configuration for a mock serial device."""
+
     port_path: str
     baud_rate: int = 9600
     probe_command: bytes = b""
@@ -225,6 +221,7 @@ class MockSerialDevice:
 @dataclass
 class MockUsbDevice:
     """Configuration for a mock USB device."""
+
     vid: int
     pid: int
     manufacturer: str = "TestCorp"
@@ -278,6 +275,8 @@ def serial_simulator_with_config():
     Returns a function that accepts SerialDeviceConfig and returns
     a context manager with the running simulator.
     """
+
     def _create(config: SerialDeviceConfig):
         return serial_device(config)
+
     return _create

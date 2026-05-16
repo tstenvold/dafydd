@@ -11,14 +11,14 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Optional
 
 
 @dataclass
 class SerialDeviceConfig:
     """Configuration for a simulated serial device."""
+
     port_path: str
     baud_rate: int = 9600
     probe_command: bytes = b"STATUS"
@@ -78,6 +78,7 @@ class UnixPTYSimulator(SerialSimulator):
     def _check_socat(self) -> bool:
         """Check if socat is available."""
         import shutil
+
         return shutil.which("socat") is not None
 
     async def start(self) -> None:
@@ -102,7 +103,8 @@ class UnixPTYSimulator(SerialSimulator):
         # One side will be our "device", the other is for the client
         cmd = [
             "socat",
-            "-d", "-d",  # Verbose debugging
+            "-d",
+            "-d",  # Verbose debugging
             f"PTY,raw,echo=0,link={device_link}",
             f"PTY,raw,echo=0,link={client_link}",
         ]
@@ -133,7 +135,6 @@ class UnixPTYSimulator(SerialSimulator):
     async def _start_pty_module(self) -> None:
         """Start using Python's pty module as fallback."""
         import pty
-        import tty
 
         # Create a PTY pair
         master_fd, slave_fd = pty.openpty()
@@ -179,7 +180,7 @@ class UnixPTYSimulator(SerialSimulator):
             except subprocess.TimeoutExpired:
                 self._socat_process.kill()
 
-        if hasattr(self, '_master_fd'):
+        if hasattr(self, "_master_fd"):
             try:
                 os.close(self._master_fd)
                 os.close(self._slave_fd)
@@ -245,10 +246,13 @@ class QEMUARMSerialSimulator(SerialSimulator):
         # Build QEMU command
         cmd = [
             "qemu-system-arm",
-            "-M", self.qemu_machine,
-            "-cpu", self.qemu_cpu,
+            "-M",
+            self.qemu_machine,
+            "-cpu",
+            self.qemu_cpu,
             "-nographic",
-            "-serial", f"tcp::{self._tcp_port},server,nowait",
+            "-serial",
+            f"tcp::{self._tcp_port},server,nowait",
         ]
 
         if self.kernel_image:
@@ -264,7 +268,9 @@ class QEMUARMSerialSimulator(SerialSimulator):
             time.sleep(2)
             self._running = True
         except FileNotFoundError:
-            raise RuntimeError("qemu-system-arm not found. Install with: brew install qemu")
+            raise RuntimeError(
+                "qemu-system-arm not found. Install with: brew install qemu"
+            )
         except Exception as e:
             raise RuntimeError(f"Failed to start QEMU: {e}")
 
@@ -333,7 +339,7 @@ class SerialSimulatorFactory:
     @staticmethod
     def create(config: SerialDeviceConfig) -> SerialSimulator:
         """Create a serial simulator appropriate for the current platform."""
-        from .platform import get_platform_info, Platform, is_arm
+        from .platform import get_platform_info, Platform
 
         info = get_platform_info()
 

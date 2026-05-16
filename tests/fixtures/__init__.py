@@ -25,7 +25,7 @@ from .serial_simulator import (
 __all__ = [
     # Platform
     "Platform",
-    "Architecture", 
+    "Architecture",
     "PlatformInfo",
     "get_platform_info",
     "is_linux",

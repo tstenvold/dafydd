@@ -2,13 +2,13 @@
 
 import os
 import platform
-import sys
 from dataclasses import dataclass
 from enum import Enum
 
 
 class Platform(Enum):
     """Supported platforms for testing."""
+
     LINUX = "linux"
     MACOS = "macos"
     WINDOWS = "windows"
@@ -18,6 +18,7 @@ class Platform(Enum):
 
 class Architecture(Enum):
     """CPU architectures."""
+
     X86_64 = "x86_64"
     AARCH64 = "aarch64"
     ARM = "arm"
@@ -28,6 +29,7 @@ class Architecture(Enum):
 @dataclass
 class PlatformInfo:
     """Complete platform information."""
+
     platform: Platform
     architecture: Architecture
     os_name: str
@@ -101,12 +103,6 @@ def detect_platform() -> PlatformInfo:
 
 def _is_qemu_environment() -> bool:
     """Check if running in a QEMU environment."""
-    # Check for QEMU-specific files or environment variables
-    qemu_files = [
-        "/sys/firmware/dmi/entries/0-0/encoded_entry",
-        "/proc/cpuinfo",
-    ]
-
     # Check CPU info for QEMU signatures
     try:
         with open("/proc/cpuinfo", "r") as f:
@@ -126,6 +122,7 @@ def _is_qemu_environment() -> bool:
 def _check_command_exists(cmd: str) -> bool:
     """Check if a command exists in PATH."""
     import shutil
+
     return shutil.which(cmd) is not None
 
 

@@ -119,9 +119,9 @@ class TestUsbDiscoveryIntegration:
             results = discovery.discover()
             for result in results:
                 assert result.transport == dafydd.Transport.Usb
-                assert hasattr(result, 'address')
-                assert hasattr(result, 'info')
+                assert hasattr(result, "address")
+                assert hasattr(result, "info")
                 # Address should be in VID:PID format
-                assert ':' in result.address
+                assert ":" in result.address
         except Exception:
             pytest.skip("USB subsystem unavailable")
