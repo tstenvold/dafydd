@@ -44,6 +44,7 @@ class TcpDeviceSimulator:
 
     def _serve(self):
         """Server loop."""
+        assert self._server is not None
         while self._running:
             try:
                 conn, _ = self._server.accept()

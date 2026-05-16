@@ -1,5 +1,13 @@
 from typing import final
 
+__all__ = [
+    "DeviceMatch",
+    "SerialDiscovery",
+    "TcpDiscovery",
+    "Transport",
+    "UsbDiscovery",
+]
+
 @final
 class Transport:
     """A transport layer for device discovery (Serial, USB, or TCP)."""
@@ -25,6 +33,13 @@ class DeviceMatch:
     address: str
     response: bytes | None
     info: dict[str, str]
+    def __init__(
+        self,
+        transport: Transport,
+        address: str,
+        response: bytes | None = None,
+        info: dict[str, str] | None = None,
+    ) -> None: ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...

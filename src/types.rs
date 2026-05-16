@@ -102,6 +102,7 @@ impl DeviceMatch {
     ///   `address`: Human-readable address.
     ///   `response`: Raw bytes returned by the device.
     ///   `info`: Transport-specific metadata.
+    #[must_use]
     #[new]
     #[pyo3(signature = (transport, address, response = None, info = None))]
     pub fn new(

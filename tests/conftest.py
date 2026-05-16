@@ -160,6 +160,7 @@ class MockTcpServer:
 
     def _run(self) -> None:
         """Server loop running in a thread."""
+        assert self._server is not None
         while self._running:
             try:
                 conn, _ = self._server.accept()
