@@ -1,15 +1,17 @@
 #![allow(missing_docs)]
-use criterion::{criterion_group, criterion_main, Criterion};
-use dafydd::serial::probe::{probe_port, probe_port_all_bauds};
+use criterion::{criterion_group, criterion_main, Criterion, SamplingMode};
+use dafydd::serial::probe::{probe_port, probe_port_all_bauds, sweep_all_ports};
 use std::time::Duration;
 use tokio::runtime::Runtime;
 
 fn bench_serial_scan(c: &mut Criterion) {
     let mut group = c.benchmark_group("serial_scan");
     group.sample_size(10);
+    group.measurement_time(Duration::from_secs(10));
+    group.sampling_mode(SamplingMode::Flat);
 
-    // Benchmark 1: Dispatch capability of a non-existent port (measure framework overhead)
-    // Fast failure logic.
+    // Benchmark 1: Fast-failure path for a non-existent port.
+    // Measures open() failure overhead only — no I/O or sleep occurs.
     group.bench_function("probe_port_missing", |b| {
         b.iter(|| {
             let res = probe_port(
@@ -23,6 +25,9 @@ fn bench_serial_scan(c: &mut Criterion) {
     });
 
     let rt = Runtime::new().unwrap();
+
+    // Benchmark 2: Async spawn_blocking wrapper with fast-failing ports.
+    // Measures the tokio::task::spawn_blocking overhead and JoinHandle cost.
     group.bench_function("probe_port_all_bauds_missing", |b| {
         b.to_async(&rt).iter(|| async {
             let res = probe_port_all_bauds(
@@ -30,6 +35,23 @@ fn bench_serial_scan(c: &mut Criterion) {
                 vec![9600, 115_200],
                 b"ping".to_vec(),
                 Duration::from_millis(5),
+            )
+            .await;
+            std::hint::black_box(res)
+        });
+    });
+
+    // Benchmark 3: Port enumeration and JoinSet setup without any I/O.
+    // Measures available_ports() enumeration + macOS tty/cu dedup + the cost
+    // of spawning and draining a JoinSet that immediately returns Ok(None)
+    // for every port (empty baud list → no open() call).
+    group.bench_function("sweep_all_ports_overhead", |b| {
+        b.to_async(&rt).iter(|| async {
+            let res = sweep_all_ports(
+                b"",
+                &[], // no baud rates → no actual I/O
+                Duration::from_millis(1),
+                false,
             )
             .await;
             std::hint::black_box(res)

@@ -110,7 +110,8 @@ class TestTcpDiscoveryGoldenCase:
                 port=unused_port,
                 subnets=[],
                 probe_command=b"STATUS?",
-                timeout_ms=1000,
+                connect_timeout_ms=1000,
+                io_timeout_ms=1000,
                 preferred_host="127.0.0.1",
             )
             results = discovery.discover()
@@ -129,7 +130,8 @@ class TestTcpDiscoveryGoldenCase:
             discovery = dafydd.TcpDiscovery(
                 port=unused_port,
                 subnets=[],
-                timeout_ms=1000,
+                connect_timeout_ms=1000,
+                io_timeout_ms=1000,
                 preferred_host="127.0.0.1",
             )
             results = discovery.discover()
@@ -151,7 +153,8 @@ class TestTcpDiscoveryFoundCase:
             discovery = dafydd.TcpDiscovery(
                 port=unused_port,
                 subnets=["127.0.0.1/32"],
-                timeout_ms=1000,
+                connect_timeout_ms=1000,
+                io_timeout_ms=1000,
             )
             results = discovery.discover()
 
@@ -171,7 +174,8 @@ class TestTcpDiscoveryFoundCase:
             discovery = dafydd.TcpDiscovery(
                 port=port1,
                 subnets=["127.0.0.1/32"],
-                timeout_ms=1000,
+                connect_timeout_ms=1000,
+                io_timeout_ms=1000,
             )
             # Only devices on the configured port will be found
             results = discovery.discover()
@@ -187,7 +191,8 @@ class TestTcpDiscoveryFailureCase:
         discovery = dafydd.TcpDiscovery(
             port=9999,
             subnets=["127.0.0.1/32"],
-            timeout_ms=500,
+            connect_timeout_ms=500,
+            io_timeout_ms=500,
         )
         results = discovery.discover()
 
@@ -200,7 +205,8 @@ class TestTcpDiscoveryFailureCase:
             discovery = dafydd.TcpDiscovery(
                 port=9997,  # Different port - won't be found
                 subnets=["127.0.0.1/32"],
-                timeout_ms=500,
+                connect_timeout_ms=500,
+                io_timeout_ms=500,
                 preferred_host="127.0.0.1",  # Preferred tries wrong port first
             )
             results = discovery.discover()
@@ -236,7 +242,8 @@ class TestTcpDiscoveryFailureCase:
                 port=port,
                 subnets=["127.0.0.1/32"],
                 probe_command=b"PING",  # Require a probe response
-                timeout_ms=500,
+                connect_timeout_ms=500,
+                io_timeout_ms=500,
             )
             results = discovery.discover()
             # Since the server never responds, it should not be found
@@ -277,7 +284,8 @@ class TestTcpDiscoveryEdgeCases:
             discovery = dafydd.TcpDiscovery(
                 port=unused_port,
                 subnets=[],
-                timeout_ms=1000,
+                connect_timeout_ms=1000,
+                io_timeout_ms=1000,
                 preferred_host="localhost",
             )
             results = discovery.discover()
@@ -295,7 +303,8 @@ class TestTcpDiscoveryEdgeCases:
                 port=unused_port,
                 subnets=["127.0.0.1/32"],
                 probe_command=b"PING",
-                timeout_ms=1000,
+                connect_timeout_ms=1000,
+                io_timeout_ms=1000,
             )
             results = discovery.discover()
 
@@ -312,7 +321,8 @@ class TestTcpDiscoveryEdgeCases:
             discovery = dafydd.TcpDiscovery(
                 port=unused_port,
                 subnets=["127.0.0.1/32"],
-                timeout_ms=1000,
+                connect_timeout_ms=1000,
+                io_timeout_ms=1000,
             )
             results = discovery.discover()
 
@@ -324,7 +334,8 @@ class TestTcpDiscoveryEdgeCases:
         discovery = dafydd.TcpDiscovery(
             port=unused_port,
             subnets=["127.0.0.1/32"],
-            timeout_ms=100,
+            connect_timeout_ms=100,
+            io_timeout_ms=100,
             max_concurrent=10,
         )
         results = discovery.discover()
@@ -340,7 +351,8 @@ class TestTcpDiscoveryEdgeCases:
             discovery = dafydd.TcpDiscovery(
                 port=unused_port,
                 subnets=[],
-                timeout_ms=1000,
+                connect_timeout_ms=1000,
+                io_timeout_ms=1000,
                 preferred_host="127.0.0.1",
             )
             results = discovery.discover()

@@ -50,7 +50,7 @@ pub fn probe_port(
             Ok(0) => break,
             Ok(n) => response.extend_from_slice(&buf[..n]),
             Err(e) if matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(1));
             }
             Err(_) => break,
         }

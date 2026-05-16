@@ -28,7 +28,10 @@ class TestDeviceMatch:
     def test_device_match_from_discovery(self):
         """Test DeviceMatch returned from discovery."""
         discovery = dafydd.TcpDiscovery(
-            port=9999, subnets=["127.0.0.1/32"], timeout_ms=100
+            port=9999,
+            subnets=["127.0.0.1/32"],
+            connect_timeout_ms=100,
+            io_timeout_ms=100,
         )
         results = discovery.discover()
         assert isinstance(results, list)
@@ -57,7 +60,10 @@ class TestDeviceMatch:
 
         try:
             discovery = dafydd.TcpDiscovery(
-                port=port, subnets=["127.0.0.1/32"], timeout_ms=1000
+                port=port,
+                subnets=["127.0.0.1/32"],
+                connect_timeout_ms=1000,
+                io_timeout_ms=1000,
             )
             results = discovery.discover()
             assert len(results) == 1
@@ -95,7 +101,10 @@ class TestDeviceMatch:
 
         try:
             discovery = dafydd.TcpDiscovery(
-                port=port, subnets=["127.0.0.1/32"], timeout_ms=1000
+                port=port,
+                subnets=["127.0.0.1/32"],
+                connect_timeout_ms=1000,
+                io_timeout_ms=1000,
             )
             results = discovery.discover()
             assert len(results) == 1
@@ -136,7 +145,10 @@ class TestDeviceMatch:
 
         try:
             discovery = dafydd.TcpDiscovery(
-                port=ports[0], subnets=["127.0.0.1/32"], timeout_ms=1000
+                port=ports[0],
+                subnets=["127.0.0.1/32"],
+                connect_timeout_ms=1000,
+                io_timeout_ms=1000,
             )
             results = discovery.discover()
             # Sort by address
@@ -238,7 +250,8 @@ class TestDiscoveryClasses:
             port=9000,
             subnets=["192.168.1.0/24"],
             probe_command=b"STATUS",
-            timeout_ms=1000,
+            connect_timeout_ms=1000,
+            io_timeout_ms=1000,
             max_concurrent=100,
             preferred_host="192.168.1.1",
         )

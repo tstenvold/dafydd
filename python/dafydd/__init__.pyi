@@ -100,7 +100,8 @@ class TcpDiscovery:
         port: int,
         subnets: list[str] = ...,
         probe_command: bytes | None = None,
-        timeout_ms: int = 200,
+        connect_timeout_ms: int = 200,
+        io_timeout_ms: int = 500,
         max_concurrent: int = 500,
         preferred_host: str | None = None,
     ) -> None:
@@ -110,7 +111,8 @@ class TcpDiscovery:
           port: Port number to scan on all hosts.
           subnets: CIDR subnets to scan (default: auto-detect local subnets).
           probe_command: Bytes to send on connect; match response if provided.
-          timeout_ms: Timeout per connection attempt.
+          connect_timeout_ms: Timeout for the TCP handshake in milliseconds.
+          io_timeout_ms: Timeout for the probe write and response read in milliseconds.
           max_concurrent: Max concurrent connections (semaphore limit).
           preferred_host: IP to try first before scanning subnets.
         """

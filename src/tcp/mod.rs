@@ -24,7 +24,8 @@ pub struct TcpDiscovery {
     subnets: Vec<String>,
     port: u16,
     probe_command: Option<Vec<u8>>,
-    timeout_ms: u64,
+    connect_timeout_ms: u64,
+    io_timeout_ms: u64,
     max_concurrent: usize,
     preferred_host: Option<String>,
 }
@@ -40,7 +41,11 @@ impl TcpDiscovery {
     ///   `probe_command`: Optional bytes to send after connecting. When set,
     ///     only hosts that respond with any bytes are returned as matches.
     ///     When omitted, every host that accepts a TCP connection is a match.
-    ///   `timeout_ms`: Per-host connect + I/O timeout in milliseconds.
+    ///   `connect_timeout_ms`: Per-host TCP handshake timeout in milliseconds
+    ///     (default 200). Governs how long to wait for the SYN-ACK.
+    ///   `io_timeout_ms`: Per-host probe write + response read timeout in
+    ///     milliseconds (default 500). Governs how long to wait for device
+    ///     data after the connection is established.
     ///   `max_concurrent`: Maximum simultaneous open connections (default 500).
     ///   `preferred_host`: Hostname or IP to probe before sweeping subnets.
     ///     Hostnames are resolved via DNS; all returned addresses are tried.
@@ -50,7 +55,8 @@ impl TcpDiscovery {
         port,
         subnets = vec![],
         probe_command = None,
-        timeout_ms = 200,
+        connect_timeout_ms = 200,
+        io_timeout_ms = 500,
         max_concurrent = 500,
         preferred_host = None,
     ))]
@@ -58,7 +64,8 @@ impl TcpDiscovery {
         port: u16,
         subnets: Vec<String>,
         probe_command: Option<Vec<u8>>,
-        timeout_ms: u64,
+        connect_timeout_ms: u64,
+        io_timeout_ms: u64,
         max_concurrent: usize,
         preferred_host: Option<String>,
     ) -> Self {
@@ -66,7 +73,8 @@ impl TcpDiscovery {
             subnets,
             port,
             probe_command,
-            timeout_ms,
+            connect_timeout_ms,
+            io_timeout_ms,
             max_concurrent,
             preferred_host,
         }
@@ -86,7 +94,8 @@ impl TcpDiscovery {
         let subnets = self.subnets.clone();
         let port = self.port;
         let probe = self.probe_command.clone();
-        let timeout = Duration::from_millis(self.timeout_ms);
+        let connect_timeout = Duration::from_millis(self.connect_timeout_ms);
+        let io_timeout = Duration::from_millis(self.io_timeout_ms);
         let max_concurrent = self.max_concurrent;
         let preferred = self.preferred_host.clone();
 
@@ -94,7 +103,8 @@ impl TcpDiscovery {
             match runtime().block_on(async move {
                 if let Some(host) = preferred {
                     if let Ok(Some(m)) =
-                        scan::probe_host(&host, port, probe.as_deref(), timeout).await
+                        scan::probe_host(&host, port, probe.as_deref(), connect_timeout, io_timeout)
+                            .await
                     {
                         return Ok(vec![m]);
                     }
@@ -106,7 +116,15 @@ impl TcpDiscovery {
                     subnets
                 };
 
-                scan::scan_subnets(&targets, port, probe.as_deref(), timeout, max_concurrent).await
+                scan::scan_subnets(
+                    &targets,
+                    port,
+                    probe.as_deref(),
+                    connect_timeout,
+                    io_timeout,
+                    max_concurrent,
+                )
+                .await
             }) {
                 Ok(v) => Ok(v),
                 Err(e) => Err(PyErr::from(e)),

@@ -54,7 +54,7 @@ impl UsbDiscovery {
                         continue;
                     }
 
-                    let mut info: HashMap<String, String> = HashMap::new();
+                    let mut info: HashMap<String, String> = HashMap::with_capacity(6);
                     info.insert(
                         "vendor_id".to_owned(),
                         format!("{:#06x}", device.vendor_id()),

@@ -70,6 +70,9 @@ pub fn local_subnets() -> Vec<String> {
 /// and any non-empty response is returned as a match. The raw response is
 /// stored in `DeviceMatch.info["response"]`.
 ///
+/// `connect_timeout` bounds the TCP handshake; `io_timeout` bounds the probe
+/// write + response read once connected.
+///
 /// Returns `Ok(Some(_))` on a match, `Ok(None)` on timeout, connection
 /// refused, or an empty response to a probe.
 ///
@@ -80,6 +83,7 @@ pub async fn probe_addr(
     addr: SocketAddr,
     probe: Option<&[u8]>,
     connect_timeout: Duration,
+    io_timeout: Duration,
     hostname_hint: Option<&str>,
 ) -> Result<Option<DeviceMatch>> {
     let Ok(Ok(stream)) = timeout(connect_timeout, TcpStream::connect(addr)).await else {
@@ -87,7 +91,7 @@ pub async fn probe_addr(
     };
 
     if let Some(p) = probe {
-        probe_stream(stream, addr, p, connect_timeout, hostname_hint).await
+        probe_stream(stream, addr, p, io_timeout, hostname_hint).await
     } else {
         Ok(Some(build_match(addr, b"", hostname_hint)))
     }
@@ -161,6 +165,7 @@ pub async fn probe_host(
     port: u16,
     probe: Option<&[u8]>,
     connect_timeout: Duration,
+    io_timeout: Duration,
 ) -> Result<Option<DeviceMatch>> {
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host(format!("{host}:{port}"))
         .await
@@ -175,9 +180,16 @@ pub async fn probe_host(
     for addr in addrs {
         let probe = probe.map(Vec::from);
         let host = host.to_owned();
-        set.spawn(
-            async move { probe_addr(addr, probe.as_deref(), connect_timeout, Some(&host)).await },
-        );
+        set.spawn(async move {
+            probe_addr(
+                addr,
+                probe.as_deref(),
+                connect_timeout,
+                io_timeout,
+                Some(&host),
+            )
+            .await
+        });
     }
 
     while let Some(result) = set.join_next().await {
@@ -192,10 +204,13 @@ pub async fn probe_host(
 /// Scan all hosts across multiple `subnets` on `port` in parallel.
 ///
 /// Subnets are validated up-front before any I/O begins. Hosts are then
-/// scanned in batches to bound peak memory usage — spawning millions of tasks
-/// for large subnets (e.g. `/8`) before the semaphore can drain them would
-/// exhaust RAM. Each batch is bounded by `max_concurrent × 4` tasks (minimum
-/// 1 024), and the semaphore caps live connections within each batch.
+/// yielded lazily — no full `Vec<SocketAddr>` is materialised upfront — and
+/// processed in batches to bound peak memory and task count. Each batch is
+/// bounded by `max_concurrent × 4` addresses (minimum 1 024), and the
+/// semaphore caps live connections within each batch.
+///
+/// `connect_timeout` bounds the TCP handshake per host; `io_timeout` bounds
+/// the probe write + response read once a connection is established.
 ///
 /// # Errors
 ///
@@ -206,39 +221,54 @@ pub async fn scan_subnets(
     port: u16,
     probe: Option<&[u8]>,
     connect_timeout: Duration,
+    io_timeout: Duration,
     max_concurrent: usize,
 ) -> Result<Vec<DeviceMatch>> {
     let sem = Arc::new(Semaphore::new(max_concurrent));
-    let probe_owned = probe.map(Vec::from);
+    // Arc<[u8]> lets every spawned task share the probe bytes with a pointer
+    // bump rather than a full Vec clone — O(1) regardless of probe size.
+    let probe_arc: Option<Arc<[u8]>> = probe.map(Arc::from);
 
-    // Validate all subnets and collect host addresses before starting any I/O.
-    // This surfaces bad CIDR strings immediately rather than mid-scan.
-    let mut all_hosts: Vec<SocketAddr> = Vec::new();
-    for subnet in subnets {
-        let net: IpNet = subnet
-            .parse()
-            .map_err(|e: ipnet::AddrParseError| DafyddError::InvalidSubnet(e.to_string()))?;
-        for host in net.hosts() {
-            all_hosts.push(SocketAddr::new(host, port));
-        }
-    }
+    // Validate all subnets upfront so bad CIDR strings fail immediately.
+    let nets: Vec<IpNet> = subnets
+        .iter()
+        .map(|s| {
+            s.parse()
+                .map_err(|e: ipnet::AddrParseError| DafyddError::InvalidSubnet(e.to_string()))
+        })
+        .collect::<Result<_>>()?;
 
-    // Batch size: a multiple of max_concurrent so the semaphore stays active,
-    // but small enough that we never hold millions of live tasks in memory for
-    // large subnets such as /8 or /16.
+    // Batch size: large enough to keep the semaphore saturated, small enough
+    // to avoid holding millions of live SocketAddrs in RAM for /8 subnets.
     let batch_size = max_concurrent.saturating_mul(4).max(1024);
     let mut matches = Vec::new();
 
-    for batch in all_hosts.chunks(batch_size) {
+    // Lazily generate SocketAddrs — no upfront allocation for large ranges.
+    let mut host_iter = nets
+        .into_iter()
+        .flat_map(move |net| net.hosts().map(move |h| SocketAddr::new(h, port)));
+
+    loop {
+        let batch: Vec<SocketAddr> = host_iter.by_ref().take(batch_size).collect();
+        if batch.is_empty() {
+            break;
+        }
         let mut set: JoinSet<Result<Option<DeviceMatch>>> = JoinSet::new();
 
-        for &sock_addr in batch {
+        for sock_addr in batch {
             let sem = Arc::clone(&sem);
-            let probe = probe_owned.clone();
+            let probe = probe_arc.clone(); // pointer bump only
             set.spawn(async move {
                 // Permit kept alive until task completes — intentional named binding.
                 let _permit = sem.acquire_owned().await;
-                probe_addr(sock_addr, probe.as_deref(), connect_timeout, None).await
+                probe_addr(
+                    sock_addr,
+                    probe.as_deref(),
+                    connect_timeout,
+                    io_timeout,
+                    None,
+                )
+                .await
             });
         }
 
