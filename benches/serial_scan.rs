@@ -36,9 +36,10 @@ fn bench_serial_scan(c: &mut Criterion) {
         b.to_async(&rt).iter(|| async {
             let res = probe_port_all_bauds(
                 "/dev/tty_does_not_exist_123".to_string(),
-                vec![9600, 115_200],
-                b"ping".to_vec(),
+                vec![9600, 115_200].into(),
+                b"ping".to_vec().into(),
                 Duration::from_millis(5),
+                None,
                 None,
                 None,
                 None,
@@ -60,6 +61,8 @@ fn bench_serial_scan(c: &mut Criterion) {
                 &[], // no baud rates → no actual I/O
                 Duration::from_millis(1),
                 false,
+                None,
+                None,
                 None,
                 None,
                 None,

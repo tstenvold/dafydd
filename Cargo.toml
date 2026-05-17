@@ -14,11 +14,20 @@ crate-type = ["cdylib", "rlib"]
 pyo3 = { version = "0.28", features = ["extension-module", "macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
 serialport = "4"
+tokio-serial = "5"
 nusb = { version = "0.2", features = ["tokio"] }
 if-addrs = "0.15"
 ipnet = "2"
 thiserror = "2"
 tracing = "0.1"
+socket2 = { version = "0.5", features = ["all"] }
+smallvec = { version = "1", features = ["union"] }
+pcap = { version = "2", optional = true }
+
+[features]
+default = []
+pcap-capture = ["dep:pcap"]
+tcp-fast-open = []
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["async_tokio", "html_reports"] }

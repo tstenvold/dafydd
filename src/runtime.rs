@@ -9,7 +9,14 @@ fn worker_threads() -> usize {
     std::env::var("DAFYDD_WORKER_THREADS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(4)
+        .unwrap_or_else(|| {
+            // TCP scanning is almost entirely I/O-bound; 2 workers saturate the
+            // async scheduler without burning threads on context switches.
+            // Serial spawn_blocking tasks get their own blocking thread pool.
+            std::thread::available_parallelism()
+                .map_or(2, std::num::NonZeroUsize::get)
+                .min(2)
+        })
 }
 
 fn thread_name() -> String {

@@ -81,7 +81,7 @@ pub enum Transport {
 
 /// A device found during discovery.
 #[pyclass(get_all, from_py_object)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceMatch {
     /// Transport layer that found this device.
     pub transport: Transport,

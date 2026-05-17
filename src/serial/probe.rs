@@ -1,41 +1,36 @@
-//! Blocking serial-port probe and parallel sweep logic.
+//! Async serial-port probe and parallel sweep logic.
+//!
+//! Uses `tokio-serial` for non-blocking I/O: no `spawn_blocking` thread per
+//! port, no 1 ms busy-wait sleep between reads. Each port probe is a native
+//! Tokio task. Baud rates are tried sequentially on the same open port handle
+//! via `set_baud_rate()` to avoid repeated open/close overhead.
 
 use crate::{
     error::{DafyddError, Result},
-    types::{DeviceMatch, Transport},
+    types::{CancellationToken, DeviceMatch, Transport},
 };
-use std::{
-    collections::HashMap,
-    io::{ErrorKind, Read, Write},
-    time::{Duration, Instant},
+use smallvec::SmallVec;
+use std::{collections::HashMap, sync::Arc, time::Duration};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    task::JoinSet,
+    time::timeout,
 };
-use tokio::task::JoinSet;
+use tokio_serial::{SerialPort, SerialPortBuilderExt};
 
-/// Attempt to open `port` at `baud`, send `probe`, and collect the response.
-///
-/// Reads in a loop until the port times out, the connection closes, or
-/// `timeout` elapses — whichever comes first. A 4 KiB internal buffer prevents
-/// silent truncation of long device responses. The full accumulated response is
-/// stored verbatim in the returned [`DeviceMatch`]'s `info["response"]` field.
-///
-/// Returns `Ok(Some(_))` when any bytes are received, `Ok(None)` when the
-/// device does not respond within `timeout`.
-///
-/// # Errors
-///
-/// Returns [`DafyddError::Serial`] if the port cannot be opened.
-/// Returns [`DafyddError::Io`] if the write fails.
-#[allow(clippy::too_many_arguments)]
-pub fn probe_port(
+/// Response accumulation buffer: stays on the stack for responses ≤ 64 bytes,
+/// which covers the majority of embedded device ID strings and status replies.
+type ResponseBuf = SmallVec<[u8; 64]>;
+
+/// Build a `serialport::SerialPortBuilder` with the common parameters.
+fn build_builder(
     port: &str,
     baud: u32,
-    probe: &[u8],
-    timeout: Duration,
     data_bits: Option<u8>,
     parity: Option<&str>,
     stop_bits: Option<u8>,
     flow_control: Option<&str>,
-) -> Result<Option<DeviceMatch>> {
+) -> Result<serialport::SerialPortBuilder> {
     let db = match data_bits {
         Some(5) => serialport::DataBits::Five,
         Some(6) => serialport::DataBits::Six,
@@ -44,7 +39,7 @@ pub fn probe_port(
         _ => {
             return Err(DafyddError::Serial(serialport::Error::new(
                 serialport::ErrorKind::InvalidInput,
-                "Invalid data bits",
+                "invalid data bits: must be 5, 6, 7, or 8",
             )))
         }
     };
@@ -56,7 +51,7 @@ pub fn probe_port(
         _ => {
             return Err(DafyddError::Serial(serialport::Error::new(
                 serialport::ErrorKind::InvalidInput,
-                "Invalid parity",
+                "invalid parity: must be 'none', 'even', or 'odd'",
             )))
         }
     };
@@ -67,7 +62,7 @@ pub fn probe_port(
         _ => {
             return Err(DafyddError::Serial(serialport::Error::new(
                 serialport::ErrorKind::InvalidInput,
-                "Invalid stop bits",
+                "invalid stop bits: must be 1 or 2",
             )))
         }
     };
@@ -79,120 +74,176 @@ pub fn probe_port(
         _ => {
             return Err(DafyddError::Serial(serialport::Error::new(
                 serialport::ErrorKind::InvalidInput,
-                "Invalid flow control",
+                "invalid flow control: must be 'none', 'hardware', or 'software'",
             )))
         }
     };
 
-    let mut serial = serialport::new(port, baud)
+    Ok(serialport::new(port, baud)
         .data_bits(db)
         .parity(par)
         .stop_bits(sb)
-        .flow_control(fc)
-        .timeout(timeout)
-        .open()
+        .flow_control(fc))
+}
+
+/// Read all available bytes from `serial` until the connection closes or
+/// `read_timeout` elapses, accumulating into a stack-resident `SmallVec`.
+async fn read_response(
+    serial: &mut tokio_serial::SerialStream,
+    read_timeout: Duration,
+) -> ResponseBuf {
+    let mut response = ResponseBuf::new();
+    let mut buf = [0u8; 64];
+
+    let _ = timeout(read_timeout, async {
+        loop {
+            match serial.read(&mut buf).await {
+                Ok(0) | Err(_) => {
+                    core::hint::cold_path();
+                    break;
+                }
+                Ok(n) => response.extend_from_slice(&buf[..n]),
+            }
+        }
+    })
+    .await;
+
+    response
+}
+
+/// Probe `port` at `baud`, send `probe`, and collect the response.
+///
+/// Returns `Ok(Some(_))` when any bytes are received, `Ok(None)` when the
+/// device does not respond within `timeout`. A `DafyddError::Serial` is
+/// returned only when the port cannot be opened — simple I/O errors are
+/// treated as no-response so every baud rate still gets a chance.
+///
+/// # Errors
+///
+/// Returns [`DafyddError::Serial`] if the port cannot be opened.
+#[allow(clippy::too_many_arguments)]
+pub async fn probe_port(
+    port: &str,
+    baud: u32,
+    probe: &[u8],
+    read_timeout: Duration,
+    data_bits: Option<u8>,
+    parity: Option<&str>,
+    stop_bits: Option<u8>,
+    flow_control: Option<&str>,
+) -> Result<Option<DeviceMatch>> {
+    let mut serial = build_builder(port, baud, data_bits, parity, stop_bits, flow_control)?
+        .open_native_async()
         .map_err(DafyddError::Serial)?;
 
-    // Discard stale bytes buffered from a previous session before sending the
-    // probe, so the response we read is always fresh.
     let _ = serial.clear(serialport::ClearBuffer::Input);
-    serial.write_all(probe).map_err(DafyddError::Io)?;
-
-    let deadline = Instant::now() + timeout;
-    let mut response: Vec<u8> = Vec::with_capacity(4096);
-    let mut buf = [0u8; 4096];
-
-    loop {
-        match serial.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => response.extend_from_slice(&buf[..n]),
-            Err(e) if matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            Err(_) => break,
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
+    if serial.write_all(probe).await.is_err() {
+        return Ok(None);
     }
 
+    let response = read_response(&mut serial, read_timeout).await;
     if response.is_empty() {
         return Ok(None);
     }
 
-    let mut info = HashMap::new();
+    let mut info = HashMap::with_capacity(1);
     info.insert("baud_rate".to_owned(), baud.to_string());
     Ok(Some(DeviceMatch {
         transport: Transport::Serial,
         address: port.to_owned(),
-        response: Some(response),
+        response: Some(response.into_vec()),
         info,
     }))
 }
 
-/// Probe `port` at each baud rate in `bauds` **sequentially** and return the
-/// first match.
+/// Probe `port` sequentially at each baud rate, reusing the open port handle.
 ///
-/// Baud rates are tried one at a time because serial ports are exclusive
-/// resources — concurrent open attempts on the same port would fail with
-/// "Access Denied" / "Device or resource busy" on every platform.
+/// Baud rates are tried one at a time because a serial port is an exclusive
+/// resource. The port is opened once at the first baud rate; subsequent rates
+/// are applied via `set_baud_rate()` to avoid the overhead of repeated
+/// open/close pairs. The input buffer is flushed before each attempt.
 ///
-/// Returns `Ok(None)` if no baud rate produces a response.
+/// Returns `Ok(None)` if no baud rate produces a response. Cancellation is
+/// checked between baud rates.
 ///
 /// # Errors
 ///
-/// Returns [`DafyddError::Serial`] for unexpected port enumeration failures.
-/// Simple open errors and I/O errors are silently skipped so every baud rate
-/// gets a chance.
+/// Returns [`DafyddError::Serial`] if the port cannot be opened at the first
+/// baud rate.
 #[allow(clippy::too_many_arguments)]
 pub async fn probe_port_all_bauds(
     port: String,
-    bauds: Vec<u32>,
-    probe: Vec<u8>,
-    timeout: Duration,
+    bauds: Arc<[u32]>,
+    probe: Arc<[u8]>,
+    read_timeout: Duration,
     data_bits: Option<u8>,
     parity: Option<String>,
     stop_bits: Option<u8>,
     flow_control: Option<String>,
+    cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Option<DeviceMatch>> {
-    // A single spawn_blocking call owns the port handle for the duration of
-    // the sequential baud scan, avoiding repeated open/close overhead.
-    let result = tokio::task::spawn_blocking(move || {
-        for baud in bauds {
-            if let Ok(Some(m)) = probe_port(
-                &port,
-                baud,
-                &probe,
-                timeout,
-                data_bits,
-                parity.as_deref(),
-                stop_bits,
-                flow_control.as_deref(),
-            ) {
-                return Ok(Some(m));
-            }
-        }
-        Ok(None)
-    })
-    .await;
-
-    match result {
-        Ok(inner) => inner,
-        Err(join_err) => {
-            // Task panicked - log and return None instead of silently swallowing
-            tracing::warn!("serial probe task panicked: {}", join_err);
-            Ok(None)
-        }
+    if bauds.is_empty() {
+        return Ok(None);
     }
+
+    let first_baud = bauds[0];
+    let mut serial = build_builder(
+        &port,
+        first_baud,
+        data_bits,
+        parity.as_deref(),
+        stop_bits,
+        flow_control.as_deref(),
+    )?
+    .open_native_async()
+    .map_err(DafyddError::Serial)?;
+
+    for &baud in bauds.iter() {
+        if cancel
+            .as_ref()
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            return Ok(None);
+        }
+
+        // Change baud rate on the already-open port (free — no syscall overhead).
+        if baud != first_baud && serial.set_baud_rate(baud).is_err() {
+            continue;
+        }
+
+        let _ = serial.clear(serialport::ClearBuffer::Input);
+
+        if serial.write_all(probe.as_ref()).await.is_err() {
+            continue;
+        }
+
+        let response = read_response(&mut serial, read_timeout).await;
+        if response.is_empty() {
+            continue;
+        }
+
+        let mut info = HashMap::with_capacity(1);
+        info.insert("baud_rate".to_owned(), baud.to_string());
+        return Ok(Some(DeviceMatch {
+            transport: Transport::Serial,
+            address: port,
+            response: Some(response.into_vec()),
+            info,
+        }));
+    }
+
+    Ok(None)
 }
 
 /// Probe every available serial port (at every baud rate) in parallel.
 ///
-/// Different ports are swept concurrently; baud rates within each port are
-/// tried sequentially (serial ports cannot be opened more than once at a time).
+/// Different ports are swept concurrently via a `JoinSet`; baud rates within
+/// each port are tried sequentially on the same open handle. The probe command
+/// and baud rate list are shared across tasks as `Arc<[_]>` to avoid O(ports)
+/// heap copies.
 ///
-/// Returns all ports that respond with any payload. Silent-skips ports that
-/// cannot be opened (busy, absent, permission-denied).
+/// Cancellation is checked between spawning port tasks and between draining
+/// results, allowing an in-progress sweep to terminate early.
 ///
 /// # Platform notes
 ///
@@ -212,27 +263,21 @@ pub async fn probe_port_all_bauds(
 pub async fn sweep_all_ports(
     probe: &[u8],
     baud_rates: &[u32],
-    timeout: Duration,
+    read_timeout: Duration,
     include_bluetooth: bool,
     data_bits: Option<u8>,
     parity: Option<String>,
     stop_bits: Option<u8>,
     flow_control: Option<String>,
+    cancel: Option<&CancellationToken>,
+    tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,
 ) -> Result<Vec<DeviceMatch>> {
     let mut ports = serialport::available_ports().map_err(DafyddError::Serial)?;
 
-    // Skip Bluetooth SPP virtual COM ports by default — they stall for several
-    // seconds per open attempt when the paired device is off or out of range,
-    // which can add minutes to a serial sweep on a machine with many paired
-    // devices.
     if !include_bluetooth {
         ports.retain(|p| !matches!(p.port_type, serialport::SerialPortType::BluetoothPort));
     }
 
-    // On macOS every physical port is exposed twice: as /dev/tty.XXX (blocks
-    // until DCD is asserted — hangs on most embedded devices that never assert
-    // DCD) and as /dev/cu.XXX (non-blocking call-out port — correct for device
-    // discovery). Drop the tty.* entry whenever a cu.* counterpart exists.
     #[cfg(target_os = "macos")]
     {
         let cu_suffixes: std::collections::HashSet<String> = ports
@@ -246,23 +291,34 @@ pub async fn sweep_all_ports(
         });
     }
 
+    // Wrap in Arc so each task gets a pointer bump instead of a Vec clone.
+    let probe_arc: Arc<[u8]> = Arc::from(probe);
+    let bauds_arc: Arc<[u32]> = Arc::from(baud_rates);
+
     let mut set: JoinSet<Result<Option<DeviceMatch>>> = JoinSet::new();
     for port_info in ports {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            break;
+        }
+
         let port = port_info.port_name.clone();
-        let bauds = baud_rates.to_vec();
-        let probe = probe.to_vec();
+        let bauds = Arc::clone(&bauds_arc);
+        let probe = Arc::clone(&probe_arc);
         let parity = parity.clone();
         let flow_control = flow_control.clone();
+        let cancel_arc = cancel.map(|c| Arc::clone(&c.inner()));
+
         set.spawn(async move {
             probe_port_all_bauds(
                 port,
                 bauds,
                 probe,
-                timeout,
+                read_timeout,
                 data_bits,
                 parity,
                 stop_bits,
                 flow_control,
+                cancel_arc,
             )
             .await
         });
@@ -270,7 +326,14 @@ pub async fn sweep_all_ports(
 
     let mut matches = Vec::new();
     while let Some(result) = set.join_next().await {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            set.abort_all();
+            break;
+        }
         if let Ok(Ok(Some(m))) = result {
+            if let Some(sender) = tx {
+                let _ = sender.try_send(m.clone());
+            }
             matches.push(m);
         }
     }

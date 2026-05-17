@@ -2,12 +2,16 @@
 //!
 //! Exposes [`serial::SerialDiscovery`], [`usb::UsbDiscovery`], and [`tcp::TcpDiscovery`] to
 //! Python via [`pyo3`]. Call `.discover()` on any of them to receive a list
-//! of [`types::DeviceMatch`] objects.
+//! of [`types::DeviceMatch`] objects. Use `.discover_streaming(callback)` to
+//! receive results as they are found. Use `.watch(on_added, on_removed)` for
+//! continuous hotplug monitoring.
 
 pub mod error;
+pub mod net;
 pub mod runtime;
 pub mod types;
 
+pub mod correlation;
 pub mod serial;
 pub mod tcp;
 pub mod usb;

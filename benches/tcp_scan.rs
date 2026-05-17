@@ -105,11 +105,13 @@ fn bench_tcp_scan(c: &mut Criterion) {
                             &subnets,
                             // Port 1 is always refused on loopback (privileged,
                             // nothing ever listens here).
-                            1,
+                            &[1],
                             None,
                             Duration::from_millis(50),
                             Duration::from_millis(50),
                             max_concurrent,
+                            None,
+                            None,
                         )
                         .await
                         .expect("scan failed");
@@ -129,11 +131,13 @@ fn bench_tcp_scan(c: &mut Criterion) {
             async move {
                 let matches = scan_subnets(
                     &subnets,
-                    echo_port,
+                    &[echo_port],
                     Some(b"ping"),
                     Duration::from_millis(200),
                     Duration::from_millis(500),
                     1,
+                    None,
+                    None,
                 )
                 .await
                 .expect("scan failed");
@@ -151,11 +155,13 @@ fn bench_tcp_scan(c: &mut Criterion) {
         b.to_async(&rt).iter(|| async {
             let matches = scan_subnets(
                 &["127.0.0.0/16".to_string()],
-                1,
+                &[1],
                 None,
                 Duration::from_millis(10),
                 Duration::from_millis(10),
                 500,
+                None,
+                None,
             )
             .await
             .expect("scan failed");
@@ -178,11 +184,13 @@ fn bench_tcp_scan(c: &mut Criterion) {
                     async move {
                         let matches = scan_subnets(
                             &["127.0.0.1/32".to_string()],
-                            echo_port,
+                            &[echo_port],
                             Some(&probe),
                             Duration::from_millis(200),
                             Duration::from_millis(500),
                             1,
+                            None,
+                            None,
                         )
                         .await
                         .expect("scan failed");
@@ -200,11 +208,13 @@ fn bench_tcp_scan(c: &mut Criterion) {
         b.to_async(&rt).iter(|| async {
             let matches = scan_subnets(
                 &["127.0.0.1/32".to_string()],
-                silent_port,
+                &[silent_port],
                 Some(b"ping"),
                 Duration::from_millis(200),
                 Duration::from_millis(100),
                 1,
+                None,
+                None,
             )
             .await
             .expect("scan failed");
