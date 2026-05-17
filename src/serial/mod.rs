@@ -7,7 +7,7 @@ use crate::{
     types::{CancellationToken, DeviceMatch},
 };
 use pyo3::prelude::*;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 /// Discovers devices connected over serial ports.
 ///
@@ -21,6 +21,11 @@ use std::time::Duration;
 ///
 /// A `cancellation_token` can be used to abort an in-progress sweep from
 /// another thread by calling `.cancel()` on the token.
+///
+/// When `response_terminator` is set, the read loop exits as soon as the
+/// accumulated response ends with those bytes, instead of waiting for the
+/// full `timeout_ms`. This is useful for line-delimited protocols such as
+/// SCPI (`\r\n`) or Modbus ASCII (`\r\n`).
 ///
 /// # Platform notes
 ///
@@ -45,6 +50,7 @@ pub struct SerialDiscovery {
     parity: Option<String>,
     stop_bits: Option<u8>,
     flow_control: Option<String>,
+    response_terminator: Option<Vec<u8>>,
     cancellation_token: Option<CancellationToken>,
 }
 
@@ -64,6 +70,14 @@ impl SerialDiscovery {
     ///     milliseconds (default 500).
     ///   `include_bluetooth`: When `True`, Bluetooth SPP virtual COM ports are
     ///     included in the sweep.
+    ///   `data_bits`: Number of data bits per character: 5, 6, 7, or 8 (default 8).
+    ///   `parity`: Parity mode: `'none'`, `'even'`, or `'odd'` (default `'none'`).
+    ///   `stop_bits`: Number of stop bits: 1 or 2 (default 1).
+    ///   `flow_control`: Flow control: `'none'`, `'hardware'`, or `'software'`
+    ///     (default `'none'`).
+    ///   `response_terminator`: If set, the read loop exits as soon as the
+    ///     response ends with these bytes (e.g. `b'\r\n'`). Without this, every
+    ///     probe waits the full `timeout_ms`.
     ///   `cancellation_token`: Optional token to cancel an in-progress sweep.
     #[must_use]
     #[new]
@@ -79,6 +93,7 @@ impl SerialDiscovery {
         parity = None,
         stop_bits = None,
         flow_control = None,
+        response_terminator = None,
         cancellation_token = None,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -94,6 +109,7 @@ impl SerialDiscovery {
         parity: Option<String>,
         stop_bits: Option<u8>,
         flow_control: Option<String>,
+        response_terminator: Option<Vec<u8>>,
         cancellation_token: Option<CancellationToken>,
     ) -> Self {
         Self {
@@ -108,6 +124,7 @@ impl SerialDiscovery {
             parity,
             stop_bits,
             flow_control,
+            response_terminator,
             cancellation_token,
         }
     }
@@ -203,13 +220,21 @@ impl SerialDiscovery {
 
             let current = self.discover(py)?;
 
+            // Compare by address only — response bytes can vary across polls
+            // for devices that include dynamic data (counters, timestamps) in
+            // their probe response, which would cause spurious add/remove events.
+            let prev_addrs: std::collections::HashSet<&str> =
+                prev.iter().map(|m| m.address.as_str()).collect();
+            let current_addrs: std::collections::HashSet<&str> =
+                current.iter().map(|m| m.address.as_str()).collect();
+
             for m in &current {
-                if !prev.iter().any(|p| p == m) {
+                if !prev_addrs.contains(m.address.as_str()) {
                     on_added.call1(py, (m.clone(),))?;
                 }
             }
             for m in &prev {
-                if !current.iter().any(|c| c == m) {
+                if !current_addrs.contains(m.address.as_str()) {
                     on_removed.call1(py, (m.clone(),))?;
                 }
             }
@@ -231,8 +256,8 @@ impl SerialDiscovery {
 
 /// Snapshot of `SerialDiscovery` config for passing into async tasks.
 struct DiscoveryConfig {
-    probe: std::sync::Arc<[u8]>,
-    bauds: std::sync::Arc<[u32]>,
+    probe: Arc<[u8]>,
+    bauds: Arc<[u32]>,
     timeout: Duration,
     preferred_port: Option<String>,
     preferred_retry: u32,
@@ -242,14 +267,15 @@ struct DiscoveryConfig {
     parity: Option<String>,
     stop_bits: Option<u8>,
     flow_control: Option<String>,
+    response_terminator: Option<Arc<[u8]>>,
     cancel: Option<CancellationToken>,
 }
 
 impl SerialDiscovery {
     fn config(&self) -> DiscoveryConfig {
         DiscoveryConfig {
-            probe: std::sync::Arc::from(self.probe_command.as_slice()),
-            bauds: std::sync::Arc::from(self.baud_rates.as_slice()),
+            probe: Arc::from(self.probe_command.as_slice()),
+            bauds: Arc::from(self.baud_rates.as_slice()),
             timeout: Duration::from_millis(self.timeout_ms),
             preferred_port: self.preferred_port.clone(),
             preferred_retry: self.preferred_retry,
@@ -259,6 +285,7 @@ impl SerialDiscovery {
             parity: self.parity.clone(),
             stop_bits: self.stop_bits,
             flow_control: self.flow_control.clone(),
+            response_terminator: self.response_terminator.as_deref().map(Arc::from),
             cancel: self.cancellation_token.clone(),
         }
     }
@@ -281,16 +308,15 @@ async fn run_discovery(
 
             if let Ok(Some(m)) = probe::probe_port_all_bauds(
                 port.clone(),
-                std::sync::Arc::clone(&cfg.bauds),
-                std::sync::Arc::clone(&cfg.probe),
+                Arc::clone(&cfg.bauds),
+                Arc::clone(&cfg.probe),
                 cfg.timeout,
                 cfg.data_bits,
                 cfg.parity.clone(),
                 cfg.stop_bits,
                 cfg.flow_control.clone(),
-                cfg.cancel
-                    .as_ref()
-                    .map(|c| std::sync::Arc::clone(&c.inner())),
+                cfg.cancel.as_ref().map(|c| Arc::clone(&c.inner())),
+                cfg.response_terminator.clone(),
             )
             .await
             {
@@ -317,6 +343,7 @@ async fn run_discovery(
         cfg.flow_control,
         cfg.cancel.as_ref(),
         tx,
+        cfg.response_terminator,
     )
     .await
 }

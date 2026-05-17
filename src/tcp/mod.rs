@@ -7,7 +7,7 @@ use crate::{
     types::{CancellationToken, DeviceMatch},
 };
 use pyo3::{exceptions::PyValueError, prelude::*};
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 use tokio::{sync::Semaphore, task::JoinSet};
 
 /// Discovers devices reachable over TCP/IP.
@@ -113,9 +113,14 @@ impl TcpDiscovery {
         mdns_timeout_ms: u64,
         cancellation_token: Option<CancellationToken>,
     ) -> Self {
-        // Merge `port` + `ports`, deduplicate, preserve order.
-        let mut all_ports: Vec<u16> = port.into_iter().chain(ports).collect();
-        all_ports.dedup();
+        // Merge `port` + `ports`, deduplicate while preserving order.
+        // Vec::dedup() only removes consecutive duplicates, so use a HashSet.
+        let mut seen = std::collections::HashSet::new();
+        let all_ports: Vec<u16> = port
+            .into_iter()
+            .chain(ports)
+            .filter(|p| seen.insert(*p))
+            .collect();
         Self {
             ports: all_ports,
             subnets,
@@ -308,22 +313,25 @@ impl TcpDiscovery {
 
             let current = self.discover(py)?;
 
-            // Detect additions.
+            // Compare by address only — response bytes can vary across polls
+            // for devices that include dynamic data in their probe response,
+            // causing spurious add/remove events with response-based equality.
+            let prev_addrs: HashSet<&str> = prev.iter().map(|m| m.address.as_str()).collect();
+            let current_addrs: HashSet<&str> = current.iter().map(|m| m.address.as_str()).collect();
+
             for m in &current {
-                if !prev.iter().any(|p| p == m) {
+                if !prev_addrs.contains(m.address.as_str()) {
                     on_added.call1(py, (m.clone(),))?;
                 }
             }
-            // Detect removals.
             for m in &prev {
-                if !current.iter().any(|c| c == m) {
+                if !current_addrs.contains(m.address.as_str()) {
                     on_removed.call1(py, (m.clone(),))?;
                 }
             }
 
             prev = current;
 
-            // Sleep for the interval, waking early if cancelled.
             let wake_at = std::time::Instant::now() + interval;
             while std::time::Instant::now() < wake_at {
                 if cancel.is_cancelled() {
@@ -379,14 +387,12 @@ async fn run_discovery(
     }
 
     // mDNS fast-path: listen for self-announcing devices before the subnet scan.
-    let mut mdns_extra_subnets: Vec<String> = Vec::new();
+    let mut mdns_matches: Vec<DeviceMatch> = Vec::new();
     if use_mdns {
         let mdns_hosts = crate::net::mdns::passive_mdns_hosts(mdns_timeout).await;
         for ip in mdns_hosts {
-            // Probe each mDNS host directly before falling into the sweep.
-            let addr = std::net::SocketAddr::from((ip, 0));
-            let host_str = addr.ip().to_string();
-            let matches = scan::probe_host(
+            let host_str = ip.to_string();
+            let found = scan::probe_host(
                 &host_str,
                 &ports,
                 probe.as_deref(),
@@ -394,31 +400,33 @@ async fn run_discovery(
                 io_timeout,
             )
             .await?;
-            if !matches.is_empty() {
+            for mut m in found {
+                m.info.insert("source".to_owned(), "mdns".to_owned());
                 if let Some(sender) = tx {
-                    for m in &matches {
-                        let _ = sender.try_send(m.clone());
-                    }
+                    let _ = sender.try_send(m.clone());
                 }
-                // Add to results but continue sweep — there may be more devices.
-                mdns_extra_subnets.push(format!("{ip}/32"));
+                mdns_matches.push(m);
             }
         }
     }
 
     // NDP cache: find IPv6 link-local neighbours and probe them.
-    let ipv6_matches = probe_ndp_neighbours(&ports, probe.as_deref(), connect_timeout, io_timeout)
-        .await
-        .unwrap_or_default();
+    let ipv6_matches = probe_ndp_neighbours(
+        &ports,
+        probe.as_deref(),
+        connect_timeout,
+        io_timeout,
+        max_concurrent,
+    )
+    .await
+    .unwrap_or_default();
 
-    let mut all_matches: Vec<DeviceMatch> = mdns_extra_subnets
-        .iter()
-        .flat_map(|_| std::iter::empty()) // mDNS matches already forwarded above
-        .chain(ipv6_matches)
-        .collect();
+    let mdns_count = mdns_matches.len();
+    let mut all_matches: Vec<DeviceMatch> = mdns_matches.into_iter().chain(ipv6_matches).collect();
 
+    // Forward IPv6 NDP matches to the channel; mDNS were forwarded in the loop above.
     if let Some(sender) = tx {
-        for m in &all_matches {
+        for m in &all_matches[mdns_count..] {
             let _ = sender.try_send(m.clone());
         }
     }
@@ -430,17 +438,6 @@ async fn run_discovery(
         subnets
     };
 
-    // Optionally disable ARP cache — build_priority_addrs reads it internally
-    // when enabled.  When disabled, we set use_arp=false by skipping the net
-    // module; we achieve this by passing an empty subnets list into a no-op
-    // scan that still runs the sweep but without ARP prioritisation.
-    // The ARP fast-path is implemented inside scan_subnets via
-    // build_priority_addrs, controlled by a feature of the scan module.
-    // Here we pass through the flag by... we can't easily toggle it per-call
-    // since build_priority_addrs always reads the ARP cache.  Future work:
-    // thread use_arp through to scan_subnets.
-    let _ = use_arp; // ARP is always enabled via build_priority_addrs for now.
-
     let sweep_matches = scan::scan_subnets(
         &targets,
         &ports,
@@ -448,12 +445,20 @@ async fn run_discovery(
         connect_timeout,
         io_timeout,
         max_concurrent,
+        use_arp,
         cancel,
         tx,
     )
     .await?;
 
-    all_matches.extend(sweep_matches);
+    // Deduplicate by address: mDNS fast-path may have already found some hosts
+    // that the subnet sweep also probed.
+    let mut seen_addrs: HashSet<String> = all_matches.iter().map(|m| m.address.clone()).collect();
+    for m in sweep_matches {
+        if seen_addrs.insert(m.address.clone()) {
+            all_matches.push(m);
+        }
+    }
     Ok(all_matches)
 }
 
@@ -463,6 +468,7 @@ async fn probe_ndp_neighbours(
     probe: Option<&[u8]>,
     connect_timeout: Duration,
     io_timeout: Duration,
+    max_concurrent: usize,
 ) -> crate::error::Result<Vec<DeviceMatch>> {
     use crate::tcp::scan::probe_addr;
 
@@ -472,7 +478,7 @@ async fn probe_ndp_neighbours(
     }
 
     let probe_arc: Option<std::sync::Arc<[u8]>> = probe.map(std::sync::Arc::from);
-    let sem = std::sync::Arc::new(Semaphore::new(ports.len().max(1) * ndp_hosts.len()));
+    let sem = std::sync::Arc::new(Semaphore::new(max_concurrent));
     let mut set: JoinSet<crate::error::Result<Option<DeviceMatch>>> = JoinSet::new();
 
     for ip in ndp_hosts {

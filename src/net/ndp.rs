@@ -51,6 +51,9 @@ mod os {
 mod os {
     use std::net::Ipv6Addr;
 
+    // Single-letter state codes from `ndp -an`: R=REACHABLE, S=STALE, D=DELAY, P=PROBE.
+    const REACHABLE_STATES: &[&str] = &["R", "S", "D", "P"];
+
     pub(super) fn ndp_cache_hosts() -> Vec<Ipv6Addr> {
         let Ok(output) = std::process::Command::new("ndp").arg("-an").output() else {
             return Vec::new();
@@ -63,13 +66,22 @@ mod os {
         stdout
             .lines()
             .skip(1) // header row
-            .filter(|line| !line.contains("(incomplete)"))
             .filter_map(|line| {
+                let mut cols = line.split_ascii_whitespace();
                 // First column may carry a scope suffix: fe80::1%en0
-                let raw = line.split_ascii_whitespace().next()?;
+                let raw = cols.next()?;
                 let addr_str = raw.split('%').next()?;
                 let ip: Ipv6Addr = addr_str.parse().ok()?;
                 if ip == Ipv6Addr::LOCALHOST {
+                    return None;
+                }
+                // Advance past linklayer, netif, expire columns.
+                cols.next()?; // linklayer (or "(incomplete)")
+                cols.next()?; // netif
+                cols.next()?; // expire
+                // State column: R/S/D/P/F/N/I — only keep reachable entries.
+                let state = cols.next()?;
+                if !REACHABLE_STATES.contains(&state) {
                     return None;
                 }
                 Some(ip)

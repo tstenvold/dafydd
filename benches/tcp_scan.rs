@@ -110,6 +110,7 @@ fn bench_tcp_scan(c: &mut Criterion) {
                             Duration::from_millis(50),
                             Duration::from_millis(50),
                             max_concurrent,
+                            true,
                             None,
                             None,
                         )
@@ -136,6 +137,7 @@ fn bench_tcp_scan(c: &mut Criterion) {
                     Duration::from_millis(200),
                     Duration::from_millis(500),
                     1,
+                    true,
                     None,
                     None,
                 )
@@ -160,6 +162,7 @@ fn bench_tcp_scan(c: &mut Criterion) {
                 Duration::from_millis(10),
                 Duration::from_millis(10),
                 500,
+                true,
                 None,
                 None,
             )
@@ -189,6 +192,7 @@ fn bench_tcp_scan(c: &mut Criterion) {
                             Duration::from_millis(200),
                             Duration::from_millis(500),
                             1,
+                            true,
                             None,
                             None,
                         )
@@ -213,6 +217,7 @@ fn bench_tcp_scan(c: &mut Criterion) {
                 Duration::from_millis(200),
                 Duration::from_millis(100),
                 1,
+                true,
                 None,
                 None,
             )

@@ -31,6 +31,9 @@ fn dafydd(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<serial::SerialDiscovery>()?;
     m.add_class::<usb::UsbDiscovery>()?;
     m.add_class::<tcp::TcpDiscovery>()?;
+    m.add_class::<correlation::CorrelatedDevice>()?;
+    m.add_function(wrap_pyfunction!(correlation::correlate_usb_serial_py, m)?)?;
+    m.add_function(wrap_pyfunction!(correlation::partition_by_transport_py, m)?)?;
 
     Ok(())
 }

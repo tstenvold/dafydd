@@ -86,11 +86,12 @@ fn build_builder(
         .flow_control(fc))
 }
 
-/// Read all available bytes from `serial` until the connection closes or
-/// `read_timeout` elapses, accumulating into a stack-resident `SmallVec`.
+/// Read available bytes from `serial` until the connection closes, `read_timeout`
+/// elapses, or `response_terminator` is seen at the end of the accumulated data.
 async fn read_response(
     serial: &mut tokio_serial::SerialStream,
     read_timeout: Duration,
+    response_terminator: Option<&[u8]>,
 ) -> ResponseBuf {
     let mut response = ResponseBuf::new();
     let mut buf = [0u8; 64];
@@ -102,7 +103,14 @@ async fn read_response(
                     core::hint::cold_path();
                     break;
                 }
-                Ok(n) => response.extend_from_slice(&buf[..n]),
+                Ok(n) => {
+                    response.extend_from_slice(&buf[..n]);
+                    if let Some(term) = response_terminator {
+                        if response.ends_with(term) {
+                            break;
+                        }
+                    }
+                }
             }
         }
     })
@@ -131,6 +139,7 @@ pub async fn probe_port(
     parity: Option<&str>,
     stop_bits: Option<u8>,
     flow_control: Option<&str>,
+    response_terminator: Option<&[u8]>,
 ) -> Result<Option<DeviceMatch>> {
     let mut serial = build_builder(port, baud, data_bits, parity, stop_bits, flow_control)?
         .open_native_async()
@@ -141,7 +150,7 @@ pub async fn probe_port(
         return Ok(None);
     }
 
-    let response = read_response(&mut serial, read_timeout).await;
+    let response = read_response(&mut serial, read_timeout, response_terminator).await;
     if response.is_empty() {
         return Ok(None);
     }
@@ -181,6 +190,7 @@ pub async fn probe_port_all_bauds(
     stop_bits: Option<u8>,
     flow_control: Option<String>,
     cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    response_terminator: Option<Arc<[u8]>>,
 ) -> Result<Option<DeviceMatch>> {
     if bauds.is_empty() {
         return Ok(None);
@@ -217,7 +227,8 @@ pub async fn probe_port_all_bauds(
             continue;
         }
 
-        let response = read_response(&mut serial, read_timeout).await;
+        let response =
+            read_response(&mut serial, read_timeout, response_terminator.as_deref()).await;
         if response.is_empty() {
             continue;
         }
@@ -271,6 +282,7 @@ pub async fn sweep_all_ports(
     flow_control: Option<String>,
     cancel: Option<&CancellationToken>,
     tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,
+    response_terminator: Option<Arc<[u8]>>,
 ) -> Result<Vec<DeviceMatch>> {
     let mut ports = serialport::available_ports().map_err(DafyddError::Serial)?;
 
@@ -307,6 +319,7 @@ pub async fn sweep_all_ports(
         let parity = parity.clone();
         let flow_control = flow_control.clone();
         let cancel_arc = cancel.map(|c| Arc::clone(&c.inner()));
+        let terminator = response_terminator.clone();
 
         set.spawn(async move {
             probe_port_all_bauds(
@@ -319,6 +332,7 @@ pub async fn sweep_all_ports(
                 stop_bits,
                 flow_control,
                 cancel_arc,
+                terminator,
             )
             .await
         });

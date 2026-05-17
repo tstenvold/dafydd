@@ -128,12 +128,11 @@ fn set_tcp_fast_open_connect(socket: &TcpSocket) {
     use socket2::Socket;
     use std::os::fd::AsRawFd;
 
-    // SAFETY: we create a temporary socket2::Socket view of the fd without
-    // taking ownership — mem::forget prevents double-close.
+    // SAFETY: ManuallyDrop prevents drop (and the fd close it would trigger)
+    // on both normal exit and unwind — socket retains sole ownership of the fd.
     let raw_fd = socket.as_raw_fd();
-    let s2 = unsafe { Socket::from_raw_fd(raw_fd) };
+    let s2 = std::mem::ManuallyDrop::new(unsafe { Socket::from_raw_fd(raw_fd) });
     let _ = s2.set_tcp_fast_open_connect(true);
-    std::mem::forget(s2);
 }
 
 /// Attempt a single TCP connection, optionally sending `probe` and collecting
@@ -284,51 +283,59 @@ pub async fn probe_host(
     Ok(matches)
 }
 
-/// Build the set of priority addresses to probe before the linear sweep.
+/// Build priority address lists to probe before the linear sweep.
 ///
-/// Priority addresses come from two sources:
-/// 1. The kernel ARP cache — hosts seen recently on the network.
-/// 2. Common last-octet heuristics (`.1`, `.100`, `.254`, etc.) applied to
-///    each subnet's network prefix.
+/// Returns `(arp_addrs, heuristic_addrs)`:
+/// - `arp_addrs`: Hosts from the kernel ARP cache, tagged `source=arp_cache`.
+/// - `heuristic_addrs`: Common last-octet addresses (`.1`, `.100`, `.254`, …)
+///   not already covered by `arp_addrs`.
 ///
-/// Only addresses that fall within the validated subnets are included, so
-/// we don't probe outside the declared scope.
-fn build_priority_addrs(nets: &[IpNet], ports: &[u16]) -> Vec<SocketAddr> {
-    let mut seen: HashSet<SocketAddr> = HashSet::new();
-    let mut out = Vec::new();
+/// Only addresses within the validated subnets are included.
+fn build_priority_addrs(
+    nets: &[IpNet],
+    ports: &[u16],
+    use_arp: bool,
+) -> (Vec<SocketAddr>, Vec<SocketAddr>) {
+    let mut arp_seen: HashSet<SocketAddr> = HashSet::new();
+    let mut arp_out: Vec<SocketAddr> = Vec::new();
 
-    let add = |addr: Ipv4Addr, seen: &mut HashSet<SocketAddr>, out: &mut Vec<SocketAddr>| {
-        for &port in ports {
-            let sa = SocketAddr::from((addr, port));
-            if seen.insert(sa) {
-                out.push(sa);
-            }
-        }
-    };
-
-    // ARP cache: machines that have communicated on the LAN recently.
-    for ip in crate::net::arp::arp_cache_hosts() {
-        for net in nets {
-            if net.contains(&std::net::IpAddr::V4(ip)) {
-                add(ip, &mut seen, &mut out);
-                break;
+    if use_arp {
+        for ip in crate::net::arp::arp_cache_hosts() {
+            for net in nets {
+                if net.contains(&std::net::IpAddr::V4(ip)) {
+                    for &port in ports {
+                        let sa = SocketAddr::from((ip, port));
+                        if arp_seen.insert(sa) {
+                            arp_out.push(sa);
+                        }
+                    }
+                    break;
+                }
             }
         }
     }
 
-    // Common last-octet heuristic within each subnet.
+    let mut heuristic_seen: HashSet<SocketAddr> = HashSet::new();
+    let mut heuristic_out: Vec<SocketAddr> = Vec::new();
+
     for net in nets {
         let IpNet::V4(v4net) = net else { continue };
         let prefix_bits = v4net.network().octets();
         for &last in PRIORITY_LAST_OCTETS {
             let addr = Ipv4Addr::new(prefix_bits[0], prefix_bits[1], prefix_bits[2], last);
             if v4net.contains(&addr) && !addr.is_broadcast() {
-                add(addr, &mut seen, &mut out);
+                for &port in ports {
+                    let sa = SocketAddr::from((addr, port));
+                    // Skip addresses already in the ARP list.
+                    if !arp_seen.contains(&sa) && heuristic_seen.insert(sa) {
+                        heuristic_out.push(sa);
+                    }
+                }
             }
         }
     }
 
-    out
+    (arp_out, heuristic_out)
 }
 
 /// Scan all hosts across multiple `subnets` on `ports` in parallel.
@@ -362,6 +369,7 @@ pub async fn scan_subnets(
     connect_timeout: Duration,
     io_timeout: Duration,
     max_concurrent: usize,
+    use_arp: bool,
     cancel: Option<&CancellationToken>,
     tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,
 ) -> Result<Vec<DeviceMatch>> {
@@ -383,20 +391,48 @@ pub async fn scan_subnets(
     let batch_size = max_concurrent.saturating_mul(4).max(1024);
     let mut matches = Vec::new();
 
-    // Priority probe: ARP cache + common octets first.
-    let priority = build_priority_addrs(&nets, ports);
-    let priority_addrs: HashSet<SocketAddr> = priority.iter().copied().collect();
-    if !priority.is_empty() {
-        let priority_matches = run_batch(
-            priority,
+    // Priority probe: ARP cache first (tagged), then common-octet heuristics.
+    let (arp_addrs, heuristic_addrs) = build_priority_addrs(&nets, ports, use_arp);
+    let priority_addrs: HashSet<SocketAddr> = arp_addrs
+        .iter()
+        .chain(heuristic_addrs.iter())
+        .copied()
+        .collect();
+
+    if !arp_addrs.is_empty() {
+        for mut m in run_batch(
+            arp_addrs,
             &sem,
             probe_arc.as_ref(),
             connect_timeout,
             io_timeout,
             cancel,
         )
-        .await;
-        for m in priority_matches {
+        .await
+        {
+            m.info.insert("source".to_owned(), "arp_cache".to_owned());
+            if let Some(sender) = tx {
+                let _ = sender.try_send(m.clone());
+            }
+            matches.push(m);
+        }
+    }
+
+    if cancel.is_some_and(CancellationToken::is_cancelled) {
+        return Ok(matches);
+    }
+
+    if !heuristic_addrs.is_empty() {
+        for m in run_batch(
+            heuristic_addrs,
+            &sem,
+            probe_arc.as_ref(),
+            connect_timeout,
+            io_timeout,
+            cancel,
+        )
+        .await
+        {
             if let Some(sender) = tx {
                 let _ = sender.try_send(m.clone());
             }

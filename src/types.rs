@@ -57,6 +57,7 @@ impl CancellationToken {
     }
 
     /// Check if cancellation has been requested.
+    #[pyo3(name = "is_cancelled")]
     fn py_is_cancelled(&self) -> bool {
         self.is_cancelled()
     }
@@ -91,6 +92,16 @@ pub struct DeviceMatch {
     pub response: Option<Vec<u8>>,
     /// Transport-specific metadata (baud rate, firmware response, hostname, …).
     pub info: HashMap<String, String>,
+}
+
+// HashMap doesn't implement Hash, so we implement it manually — mirroring __hash__
+// by hashing transport + address + response and skipping info.
+impl Hash for DeviceMatch {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(&self.transport).hash(state);
+        self.address.hash(state);
+        self.response.hash(state);
+    }
 }
 
 #[pymethods]
@@ -192,10 +203,13 @@ impl DeviceMatch {
     #[getter]
     fn product_id(&self) -> Option<u16> {
         match self.transport {
-            Transport::Usb => self
-                .address
-                .split_once(':')
-                .and_then(|(_, p)| u16::from_str_radix(p.trim_start_matches("0x"), 16).ok()),
+            Transport::Usb => {
+                // Address format is "VID:PID" or "VID:PID:serial_number".
+                let mut parts = self.address.splitn(3, ':');
+                parts.next(); // skip vendor
+                let pid_str = parts.next()?;
+                u16::from_str_radix(pid_str.trim_start_matches("0x"), 16).ok()
+            }
             _ => None,
         }
     }
