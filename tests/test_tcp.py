@@ -165,7 +165,11 @@ class TestTcpDiscoveryFoundCase:
     def test_subnet_sweep_finds_multiple_devices(self, unused_port):
         """Test finding multiple devices during subnet sweep."""
         port1 = unused_port
-        port2 = unused_port + 1
+        # Get a second independent free port; unused_port+1 is not guaranteed
+        # to be available (Windows reserves port ranges that can block bind()).
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            port2 = s.getsockname()[1]
 
         with (
             make_tcp_device(host="127.0.0.1", port=port1, response=b"DEV1"),
