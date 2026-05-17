@@ -214,6 +214,21 @@ impl DeviceMatch {
         }
     }
 
+    /// For USB transport: True if the device reports HID class (0x03) at the device level.
+    ///
+    /// Note: devices that report HID only at the interface level will return False.
+    #[getter]
+    fn is_hid(&self) -> bool {
+        match self.transport {
+            Transport::Usb => self
+                .info
+                .get("device_class")
+                .and_then(|s| s.parse::<u8>().ok())
+                .is_some_and(|c| c == 3),
+            _ => false,
+        }
+    }
+
     /// Return keyword arguments for the matching python-bus factory function.
     fn bus_params<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new(py);
@@ -222,6 +237,28 @@ impl DeviceMatch {
                 d.set_item("port", &self.address)?;
                 if let Some(br) = self.baud_rate() {
                     d.set_item("baudrate", br)?;
+                }
+                if let Some(db) = self
+                    .info
+                    .get("data_bits")
+                    .and_then(|s| s.parse::<u8>().ok())
+                {
+                    d.set_item("bytesize", db)?;
+                }
+                if let Some(p) = self.info.get("parity") {
+                    let parity_char = match p.as_str() {
+                        "even" => "E",
+                        "odd" => "O",
+                        _ => "N",
+                    };
+                    d.set_item("parity", parity_char)?;
+                }
+                if let Some(sb) = self
+                    .info
+                    .get("stop_bits")
+                    .and_then(|s| s.parse::<u8>().ok())
+                {
+                    d.set_item("stopbits", sb)?;
                 }
             }
             Transport::Tcp => {

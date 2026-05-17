@@ -110,7 +110,7 @@ impl UsbDiscovery {
                         }
                     }
 
-                    let mut info: HashMap<String, String> = HashMap::with_capacity(6);
+                    let mut info: HashMap<String, String> = HashMap::with_capacity(7);
                     info.insert(
                         "vendor_id".to_owned(),
                         format!("{:#06x}", device.vendor_id()),
@@ -119,6 +119,7 @@ impl UsbDiscovery {
                         "product_id".to_owned(),
                         format!("{:#06x}", device.product_id()),
                     );
+                    info.insert("device_class".to_owned(), device.class().to_string());
                     if let Some(m) = device.manufacturer_string() {
                         info.insert("manufacturer".to_owned(), m.to_owned());
                     }

@@ -40,11 +40,12 @@ class DeviceMatch:
       address: The device address (port name, ``VID:PID[:serial]``, or IP:port).
       response: The response bytes from the probe command (if any).
       info: Metadata dict with transport-specific fields.
-        Serial — ``baud_rate``.
+        Serial — ``baud_rate``; ``data_bits`` (if not 8), ``parity``
+          (``"even"`` or ``"odd"`` if not ``"none"``), ``stop_bits`` (if not 1).
         TCP — ``hostname`` (when known), ``source`` (``"arp_cache"`` or ``"mdns"``
           when found via those paths).
-        USB — ``vendor_id``, ``product_id``, ``manufacturer``, ``product``,
-          ``serial_number``.
+        USB — ``vendor_id``, ``product_id``, ``device_class``, ``manufacturer``,
+          ``product``, ``serial_number``.
     """
 
     transport: Transport
@@ -81,6 +82,10 @@ class DeviceMatch:
     @property
     def product_id(self) -> int | None:
         """For USB transport: product ID as an integer."""
+        ...
+    @property
+    def is_hid(self) -> bool:
+        """For USB transport: True if the device reports HID class (0x03) at the device level."""
         ...
     def bus_params(self) -> dict[str, str | int]:
         """Return keyword arguments for the matching python-bus factory function."""

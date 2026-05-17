@@ -23,6 +23,7 @@ fn bench_serial_scan(c: &mut Criterion) {
                 None,
                 None,
                 None,
+                None,
             );
             std::hint::black_box(res)
         });
@@ -39,6 +40,7 @@ fn bench_serial_scan(c: &mut Criterion) {
                 vec![9600, 115_200].into(),
                 b"ping".to_vec().into(),
                 Duration::from_millis(5),
+                None,
                 None,
                 None,
                 None,
@@ -61,6 +63,7 @@ fn bench_serial_scan(c: &mut Criterion) {
                 &[], // no baud rates → no actual I/O
                 Duration::from_millis(1),
                 false,
+                None,
                 None,
                 None,
                 None,

@@ -155,8 +155,23 @@ pub async fn probe_port(
         return Ok(None);
     }
 
-    let mut info = HashMap::with_capacity(1);
+    let mut info = HashMap::with_capacity(4);
     info.insert("baud_rate".to_owned(), baud.to_string());
+    if let Some(db) = data_bits {
+        if db != 8 {
+            info.insert("data_bits".to_owned(), db.to_string());
+        }
+    }
+    if let Some(p) = parity {
+        if p != "none" {
+            info.insert("parity".to_owned(), p.to_owned());
+        }
+    }
+    if let Some(sb) = stop_bits {
+        if sb != 1 {
+            info.insert("stop_bits".to_owned(), sb.to_string());
+        }
+    }
     Ok(Some(DeviceMatch {
         transport: Transport::Serial,
         address: port.to_owned(),
@@ -233,8 +248,23 @@ pub async fn probe_port_all_bauds(
             continue;
         }
 
-        let mut info = HashMap::with_capacity(1);
+        let mut info = HashMap::with_capacity(4);
         info.insert("baud_rate".to_owned(), baud.to_string());
+        if let Some(db) = data_bits {
+            if db != 8 {
+                info.insert("data_bits".to_owned(), db.to_string());
+            }
+        }
+        if let Some(ref p) = parity {
+            if p != "none" {
+                info.insert("parity".to_owned(), p.clone());
+            }
+        }
+        if let Some(sb) = stop_bits {
+            if sb != 1 {
+                info.insert("stop_bits".to_owned(), sb.to_string());
+            }
+        }
         return Ok(Some(DeviceMatch {
             transport: Transport::Serial,
             address: port,
