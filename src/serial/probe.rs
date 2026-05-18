@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    task::JoinSet,
+    task::{spawn_blocking, JoinSet},
     time::timeout,
 };
 use tokio_serial::{SerialPort, SerialPortBuilderExt};
@@ -286,6 +286,121 @@ pub async fn probe_port_all_bauds(
     Ok(None)
 }
 
+/// Synchronous equivalent of [`probe_port_all_bauds`], intended for use with
+/// `tokio::task::spawn_blocking`.
+///
+/// Opens the port once at the first baud rate using the blocking `serialport`
+/// API, then changes the baud rate in-place for each subsequent attempt.
+/// Returns `Ok(None)` if no baud rate elicits a response.
+///
+/// # Errors
+///
+/// Returns [`DafyddError::Serial`] if the port cannot be opened.
+#[allow(clippy::too_many_arguments)]
+fn probe_port_all_bauds_sync(
+    port: String,
+    bauds: &Arc<[u32]>,
+    probe: &Arc<[u8]>,
+    read_timeout: Duration,
+    data_bits: Option<u8>,
+    parity: Option<&String>,
+    stop_bits: Option<u8>,
+    flow_control: Option<&String>,
+    cancel: Option<&Arc<std::sync::atomic::AtomicBool>>,
+    response_terminator: Option<&Arc<[u8]>>,
+) -> Result<Option<DeviceMatch>> {
+    use std::io::{Read, Write};
+
+    if bauds.is_empty() {
+        return Ok(None);
+    }
+
+    let first_baud = bauds[0];
+    let mut serial = build_builder(
+        &port,
+        first_baud,
+        data_bits,
+        parity.map(String::as_str),
+        stop_bits,
+        flow_control.map(String::as_str),
+    )?
+    .timeout(read_timeout)
+    .open()
+    .map_err(DafyddError::Serial)?;
+
+    for &baud in bauds.iter() {
+        if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            return Ok(None);
+        }
+
+        if baud != first_baud && serial.set_baud_rate(baud).is_err() {
+            continue;
+        }
+
+        let _ = serial.clear(serialport::ClearBuffer::Input);
+
+        if serial.write_all(probe.as_ref()).is_err() {
+            continue;
+        }
+
+        let mut response = Vec::new();
+        let mut buf = [0u8; 64];
+        loop {
+            match serial.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    response.extend_from_slice(&buf[..n]);
+                    if let Some(term) = response_terminator {
+                        if response.ends_with(term.as_ref()) {
+                            break;
+                        }
+                    }
+                    // Once data has started arriving, switch to a short
+                    // inter-chunk timeout so we drain without over-waiting.
+                    let _ = serial.set_timeout(Duration::from_millis(50));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
+                Err(_) => break,
+            }
+        }
+
+        if response.is_empty() {
+            continue;
+        }
+
+        let mut info = HashMap::with_capacity(4);
+        info.insert("baud_rate".to_owned(), baud.to_string());
+        if let Some(db) = data_bits {
+            if db != 8 {
+                info.insert("data_bits".to_owned(), db.to_string());
+            }
+        }
+        if let Some(p) = parity {
+            if p != "none" {
+                info.insert("parity".to_owned(), p.clone());
+            }
+        }
+        if let Some(sb) = stop_bits {
+            if sb != 1 {
+                info.insert("stop_bits".to_owned(), sb.to_string());
+            }
+        }
+        if let Some(fc) = flow_control {
+            if fc != "none" {
+                info.insert("flow_control".to_owned(), fc.clone());
+            }
+        }
+        return Ok(Some(DeviceMatch {
+            transport: Transport::Serial,
+            address: port,
+            response: Some(response),
+            info,
+        }));
+    }
+
+    Ok(None)
+}
+
 /// Probe every available serial port (at every baud rate) in parallel.
 ///
 /// Different ports are swept concurrently via a `JoinSet`; baud rates within
@@ -352,6 +467,11 @@ pub async fn sweep_all_ports(
     let probe_arc: Arc<[u8]> = Arc::from(probe);
     let bauds_arc: Arc<[u32]> = Arc::from(baud_rates);
 
+    // Budget caps the total per-port wall time (blocking open + write + read).
+    // Using spawn_blocking puts each port on its own OS thread so they all
+    // run in parallel even when open() stalls (e.g. Bluetooth SPP ports).
+    let open_budget = read_timeout + Duration::from_secs(1);
+
     let mut set: JoinSet<Result<Option<DeviceMatch>>> = JoinSet::new();
     for port_info in ports {
         if cancel.is_some_and(CancellationToken::is_cancelled) {
@@ -367,19 +487,24 @@ pub async fn sweep_all_ports(
         let terminator = response_terminator.clone();
 
         set.spawn(async move {
-            probe_port_all_bauds(
-                port,
-                bauds,
-                probe,
-                read_timeout,
-                data_bits,
-                parity,
-                stop_bits,
-                flow_control,
-                cancel_arc,
-                terminator,
-            )
-            .await
+            let handle = spawn_blocking(move || {
+                probe_port_all_bauds_sync(
+                    port,
+                    &bauds,
+                    &probe,
+                    read_timeout,
+                    data_bits,
+                    parity.as_ref(),
+                    stop_bits,
+                    flow_control.as_ref(),
+                    cancel_arc.as_ref(),
+                    terminator.as_ref(),
+                )
+            });
+            match timeout(open_budget, handle).await {
+                Ok(Ok(result)) => result,
+                _ => Ok(None),
+            }
         });
     }
 
