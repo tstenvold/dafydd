@@ -14,10 +14,18 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 /// This is the same list [`TcpDiscovery`] uses when no subnets are configured.
 /// Link-local (`169.254.x.x`) and loopback addresses are excluded. IPv6
 /// interfaces are skipped.
-#[must_use]
+///
+/// `max_prefix` is the broadest subnet width auto-detection will widen *to*.
+/// Defaults to /24 (≤254 hosts). Must be in `[16, 32]`; values outside that
+/// range raise `ValueError` to prevent accidental /15-or-wider sweeps.
+///
+/// # Errors
+///
+/// Raises `ValueError` when `max_prefix` is outside `16..=32`.
 #[pyfunction]
-pub fn local_subnets() -> Vec<String> {
-    scan::local_subnets()
+#[pyo3(signature = (max_prefix = 24))]
+pub fn local_subnets(max_prefix: u8) -> PyResult<Vec<String>> {
+    scan::local_subnets(max_prefix).map_err(PyErr::from)
 }
 
 /// Discovers devices reachable over TCP/IP.
@@ -38,6 +46,10 @@ pub fn local_subnets() -> Vec<String> {
 /// (`.1`, `.100`, `.254`, etc.). This typically finds active devices within
 /// milliseconds on a LAN without scanning the full subnet.
 ///
+/// When running with root / `CAP_NET_RAW`, ICMP echo requests pre-filter the
+/// remaining sweep to only alive hosts; on Linux a raw SYN scan then further
+/// narrows to open ports — both happen automatically, no configuration needed.
+///
 /// When no subnets are provided, the library automatically discovers all
 /// active network interfaces and sweeps their connected subnets.
 #[pyclass]
@@ -54,8 +66,12 @@ pub struct TcpDiscovery {
     use_arp_cache: bool,
     use_mdns: bool,
     mdns_timeout_ms: u64,
+    use_ssdp: bool,
+    ssdp_timeout_ms: u64,
     response_filter: Option<Vec<u8>>,
     cancellation_token: Option<CancellationToken>,
+    subnet_prefix: u8,
+    tcp_linger_seconds: Option<u32>,
 }
 
 #[pymethods]
@@ -88,19 +104,35 @@ impl TcpDiscovery {
     ///     `mdns_timeout_ms`).
     ///   `mdns_timeout_ms`: Duration to wait for mDNS responses in milliseconds
     ///     (default 1000). Only used when `use_mdns=True`.
+    ///   `use_ssdp`: Send an SSDP M-SEARCH query and probe responding hosts
+    ///     before the subnet sweep (default `False`; adds latency equal to
+    ///     `ssdp_timeout_ms`). Finds UPnP-capable devices (routers, cameras,
+    ///     smart home hardware) that do not advertise via mDNS.
+    ///   `ssdp_timeout_ms`: Duration to wait for SSDP responses in milliseconds
+    ///     (default 1000). Only used when `use_ssdp=True`.
     ///   `response_filter`: Optional bytes that must appear in the probe
     ///     response for a host to count as a match. When omitted, any non-empty
     ///     response is accepted. Has no effect when `probe_command` is not set.
     ///   `cancellation_token`: Optional token to cancel an in-progress
     ///     discovery. Call `.cancel()` from another thread to stop the sweep.
-    #[must_use]
+    ///   `subnet_prefix`: Broadest subnet width to widen auto-detected
+    ///     interfaces to (default 24, ≤254 hosts). Must be in `[16, 32]`.
+    ///     Only used when `subnets` is empty.
+    ///   `tcp_linger_seconds`: TCP `SO_LINGER` value. `None` (default) =
+    ///     graceful FIN close (OS default); `Some(0)` = RST close, no
+    ///     `TIME_WAIT` — fast but antisocial; `Some(n)` = block close for
+    ///     up to `n` seconds.
+    ///
+    /// # Errors
+    ///
+    /// Raises `ValueError` when `subnet_prefix` is outside `16..=32`.
     #[new]
     #[pyo3(signature = (
         port = None,
         ports = vec![],
         subnets = vec![],
         probe_command = None,
-        connect_timeout_ms = 200,
+        connect_timeout_ms = 50,
         io_timeout_ms = 500,
         max_concurrent = 500,
         preferred_host = None,
@@ -109,8 +141,12 @@ impl TcpDiscovery {
         use_arp_cache = true,
         use_mdns = false,
         mdns_timeout_ms = 1000,
+        use_ssdp = false,
+        ssdp_timeout_ms = 1000,
         response_filter = None,
         cancellation_token = None,
+        subnet_prefix = 24,
+        tcp_linger_seconds = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -127,9 +163,19 @@ impl TcpDiscovery {
         use_arp_cache: bool,
         use_mdns: bool,
         mdns_timeout_ms: u64,
+        use_ssdp: bool,
+        ssdp_timeout_ms: u64,
         response_filter: Option<Vec<u8>>,
         cancellation_token: Option<CancellationToken>,
-    ) -> Self {
+        subnet_prefix: u8,
+        tcp_linger_seconds: Option<u32>,
+    ) -> PyResult<Self> {
+        if !(16..=32).contains(&subnet_prefix) {
+            return Err(PyValueError::new_err(format!(
+                "subnet_prefix /{subnet_prefix} out of range; must be in [16, 32]"
+            )));
+        }
+
         // Merge `port` + `ports`, deduplicate while preserving order.
         let mut seen = std::collections::HashSet::new();
         let all_ports: Vec<u16> = port
@@ -137,7 +183,7 @@ impl TcpDiscovery {
             .chain(ports)
             .filter(|p| seen.insert(*p))
             .collect();
-        Self {
+        Ok(Self {
             ports: all_ports,
             subnets,
             probe_command,
@@ -150,9 +196,13 @@ impl TcpDiscovery {
             use_arp_cache,
             use_mdns,
             mdns_timeout_ms,
+            use_ssdp,
+            ssdp_timeout_ms,
             response_filter,
             cancellation_token,
-        }
+            subnet_prefix,
+            tcp_linger_seconds,
+        })
     }
 
     /// Run discovery and return a list of matching devices.
@@ -336,8 +386,12 @@ struct DiscoveryParams {
     use_arp: bool,
     use_mdns: bool,
     mdns_timeout: Duration,
+    use_ssdp: bool,
+    ssdp_timeout: Duration,
     response_filter: Option<Vec<u8>>,
     cancel: Option<CancellationToken>,
+    subnet_prefix: u8,
+    linger: Option<Duration>,
 }
 
 impl TcpDiscovery {
@@ -355,14 +409,21 @@ impl TcpDiscovery {
             use_arp: self.use_arp_cache,
             use_mdns: self.use_mdns,
             mdns_timeout: Duration::from_millis(self.mdns_timeout_ms),
+            use_ssdp: self.use_ssdp,
+            ssdp_timeout: Duration::from_millis(self.ssdp_timeout_ms),
             response_filter: self.response_filter.clone(),
             cancel: self.cancellation_token.clone(),
+            subnet_prefix: self.subnet_prefix,
+            linger: self
+                .tcp_linger_seconds
+                .map(|s| Duration::from_secs(u64::from(s))),
         }
     }
 }
 
 /// Core async discovery logic shared between `discover`, `discover_streaming`,
 /// and `discover_async`.
+#[allow(clippy::too_many_lines)]
 async fn run_discovery(
     p: DiscoveryParams,
     tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,
@@ -383,6 +444,7 @@ async fn run_discovery(
                 p.connect_timeout,
                 p.io_timeout,
                 filter.clone(),
+                p.linger,
             )
             .await?;
             if !matches.is_empty() {
@@ -400,7 +462,7 @@ async fn run_discovery(
     }
 
     // mDNS fast-path: send a DNS-SD query and probe responding devices.
-    let mut mdns_matches: Vec<DeviceMatch> = Vec::new();
+    let mut fast_matches: Vec<DeviceMatch> = Vec::new();
     if p.use_mdns {
         let mdns_hosts = crate::net::mdns::active_mdns_hosts(p.mdns_timeout).await;
         for ip in mdns_hosts {
@@ -412,6 +474,7 @@ async fn run_discovery(
                 p.connect_timeout,
                 p.io_timeout,
                 filter.clone(),
+                p.linger,
             )
             .await?;
             for mut m in found {
@@ -419,16 +482,41 @@ async fn run_discovery(
                 if let Some(sender) = tx {
                     let _ = sender.try_send(m.clone());
                 }
-                mdns_matches.push(m);
+                fast_matches.push(m);
             }
         }
     }
 
-    let mut all_matches = mdns_matches;
+    // SSDP fast-path: send an M-SEARCH query and probe UPnP-responding devices.
+    if p.use_ssdp {
+        let ssdp_hosts = crate::net::ssdp::active_ssdp_hosts(p.ssdp_timeout).await;
+        for ip in ssdp_hosts {
+            let host_str = ip.to_string();
+            let found = scan::probe_host(
+                &host_str,
+                &p.ports,
+                p.probe.as_deref(),
+                p.connect_timeout,
+                p.io_timeout,
+                filter.clone(),
+                p.linger,
+            )
+            .await?;
+            for mut m in found {
+                m.info.insert("source".to_owned(), "ssdp".to_owned());
+                if let Some(sender) = tx {
+                    let _ = sender.try_send(m.clone());
+                }
+                fast_matches.push(m);
+            }
+        }
+    }
+
+    let mut all_matches = fast_matches;
 
     // Subnet sweep (the main path for unknown device locations).
     let targets = if p.subnets.is_empty() {
-        scan::local_subnets()
+        scan::local_subnets(p.subnet_prefix)?
     } else {
         p.subnets
     };
@@ -444,11 +532,12 @@ async fn run_discovery(
         cancel,
         tx,
         filter,
+        p.linger,
     )
     .await?;
 
-    // Deduplicate by address: mDNS fast-path may have already found some hosts
-    // that the subnet sweep also probed.
+    // Deduplicate by address: mDNS/SSDP fast-paths may have already found some
+    // hosts that the subnet sweep also probed.
     let mut seen_addrs: HashSet<String> = all_matches.iter().map(|m| m.address.clone()).collect();
     for m in sweep_matches {
         if seen_addrs.insert(m.address.clone()) {
