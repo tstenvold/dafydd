@@ -20,7 +20,7 @@ if-addrs = "0.15"
 ipnet = "2"
 thiserror = "2"
 tracing = "0.1"
-socket2 = { version = "0.5", features = ["all"] }
+socket2 = { version = "0.6", features = ["all"] }
 smallvec = { version = "1", features = ["union"] }
 pcap = { version = "2", optional = true }
 
