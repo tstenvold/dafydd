@@ -4,6 +4,8 @@ use dafydd::runtime::runtime;
 use std::collections::HashMap;
 use std::time::Duration;
 
+type DeviceData = (u16, u16, u8, Option<String>, Option<String>, Option<String>);
+
 fn bench_usb_scan(c: &mut Criterion) {
     let mut group = c.benchmark_group("usb_scan");
     group.sample_size(10);
@@ -22,7 +24,6 @@ fn bench_usb_scan(c: &mut Criterion) {
     // Collect device data once outside the timed loop so that the benchmark
     // measures only the HashMap and String allocation work, not the OS call.
     // This makes results comparable across runs regardless of device count.
-    type DeviceData = (u16, u16, u8, Option<String>, Option<String>, Option<String>);
     let devices: Vec<DeviceData> = runtime().block_on(async {
         let Ok(devs) = nusb::list_devices().await else {
             return vec![];
@@ -48,8 +49,8 @@ fn bench_usb_scan(c: &mut Criterion) {
             let mut out: Vec<HashMap<String, String>> = Vec::new();
             for (vid, pid, class, mfg, prod, sn) in &devices {
                 let mut info: HashMap<String, String> = HashMap::with_capacity(7);
-                info.insert("vendor_id".to_owned(), format!("{:#06x}", vid));
-                info.insert("product_id".to_owned(), format!("{:#06x}", pid));
+                info.insert("vendor_id".to_owned(), format!("{vid:#06x}"));
+                info.insert("product_id".to_owned(), format!("{pid:#06x}"));
                 info.insert("device_class".to_owned(), class.to_string());
                 if let Some(m) = mfg {
                     info.insert("manufacturer".to_owned(), m.clone());

@@ -2,15 +2,12 @@ from typing import Callable, final
 
 __all__ = [
     "CancellationToken",
-    "CorrelatedDevice",
     "DeviceMatch",
     "SerialDiscovery",
     "TcpDiscovery",
     "Transport",
     "UsbDiscovery",
-    "correlate_usb_serial",
     "local_subnets",
-    "partition_by_transport",
 ]
 
 @final
@@ -93,44 +90,11 @@ class DeviceMatch:
         """Return keyword arguments for the matching python-bus factory function."""
         ...
 
-@final
-class CorrelatedDevice:
-    """A USB and Serial match that represent the same physical device.
-
-    Attributes:
-      usb: The USB enumeration result.
-      serial: The Serial port result for the same physical device.
-    """
-
-    usb: DeviceMatch
-    serial: DeviceMatch
-    def __repr__(self) -> str: ...
-
 def local_subnets() -> list[str]:
     """Return CIDR strings for all active non-loopback IPv4 interfaces.
 
     This is the same list TcpDiscovery uses when no subnets are configured.
     Link-local (169.254.x.x) and loopback addresses are excluded.
-    """
-    ...
-
-def correlate_usb_serial(
-    usb_matches: list[DeviceMatch],
-    serial_matches: list[DeviceMatch],
-) -> list[CorrelatedDevice]:
-    """Correlate USB and Serial matches by USB serial number.
-
-    Returns pairs where the same physical device appears in both lists.
-    Matches without a ``serial_number`` in their info dict are skipped.
-    """
-    ...
-
-def partition_by_transport(
-    matches: list[DeviceMatch],
-) -> tuple[list[DeviceMatch], list[DeviceMatch], list[DeviceMatch]]:
-    """Partition a flat list of matches by transport.
-
-    Returns ``(serial_matches, usb_matches, tcp_matches)``.
     """
     ...
 
@@ -140,8 +104,8 @@ class SerialDiscovery:
 
     def __init__(
         self,
-        probe_command: bytes,
-        baud_rates: list[int],
+        probe_command: bytes | None = None,
+        baud_rates: list[int] = ...,
         timeout_ms: int = 500,
         preferred_port: str | None = None,
         preferred_retry: int = 0,
@@ -153,15 +117,19 @@ class SerialDiscovery:
         flow_control: str | None = None,
         port_filter: str | None = None,
         response_terminator: bytes | None = None,
+        response_filter: bytes | None = None,
         cancellation_token: CancellationToken | None = None,
     ) -> None:
         """Initialize a serial device discoverer.
 
         Args:
           probe_command: Bytes to send to each port (e.g., ``b'*IDN?\\r\\n'``).
+            When ``None`` (default), ports are listed without opening them.
           baud_rates: Baud rates to sweep in order (e.g., ``[9600, 115200]``).
+            Required when ``probe_command`` is set; ignored otherwise.
           timeout_ms: Per-port read/write timeout in milliseconds.
           preferred_port: Port to try first before sweeping all ports.
+            Ignored when ``probe_command`` is ``None``.
           preferred_retry: Retry preferred_port this many times before fallback.
           preferred_retry_delay_ms: Delay between preferred port retries (ms).
           include_bluetooth: Include Bluetooth SPP ports (default False on Windows).
@@ -175,16 +143,30 @@ class SerialDiscovery:
           response_terminator: Exit the read loop early when the response ends
             with these bytes (e.g., ``b'\\r\\n'``). Without this, every probe
             waits the full ``timeout_ms``.
+          response_filter: Bytes that must appear in the response for a port to
+            match (e.g., a device serial number). When ``None``, any non-empty
+            response is accepted. Has no effect when ``probe_command`` is ``None``.
           cancellation_token: Token to cancel an in-progress sweep or watch.
         """
         ...
     def discover(self) -> list[DeviceMatch]:
-        """Probe all serial ports and return matching devices."""
+        """Probe all serial ports and return matching devices.
+
+        When ``probe_command`` is ``None``, returns all available ports
+        without opening them.
+        """
         ...
     def discover_streaming(
         self, callback: Callable[[DeviceMatch], None]
     ) -> list[DeviceMatch]:
         """Probe all serial ports, calling ``callback`` as each device is found."""
+        ...
+    async def discover_async(self) -> list[DeviceMatch]:
+        """Probe all serial ports and return matching devices (async variant).
+
+        Equivalent to ``discover()`` but returns an awaitable suitable for use
+        in ``asyncio`` event loops.
+        """
         ...
     def watch(
         self,
@@ -196,6 +178,7 @@ class SerialDiscovery:
 
         Requires a ``cancellation_token`` to stop. Compares devices by address
         only, so dynamic probe responses do not cause spurious events.
+        Default poll interval is 2000 ms.
         """
         ...
 
@@ -237,6 +220,13 @@ class UsbDiscovery:
     ) -> list[DeviceMatch]:
         """Enumerate USB devices, calling ``callback`` for each match found."""
         ...
+    async def discover_async(self) -> list[DeviceMatch]:
+        """Enumerate USB devices and return matching devices (async variant).
+
+        Equivalent to ``discover()`` but returns an awaitable suitable for use
+        in ``asyncio`` event loops.
+        """
+        ...
     def watch(
         self,
         on_added: Callable[[DeviceMatch], None],
@@ -268,6 +258,7 @@ class TcpDiscovery:
         use_arp_cache: bool = True,
         use_mdns: bool = False,
         mdns_timeout_ms: int = 1000,
+        response_filter: bytes | None = None,
         cancellation_token: CancellationToken | None = None,
     ) -> None:
         """Initialize a TCP device discoverer.
@@ -289,9 +280,14 @@ class TcpDiscovery:
           preferred_retry_delay_ms: Delay between preferred host retries (ms).
           use_arp_cache: Probe ARP-cached hosts first (default True). These
             matches include ``info["source"] = "arp_cache"``.
-          use_mdns: Listen for mDNS announcements before scanning (default
-            False). These matches include ``info["source"] = "mdns"``.
-          mdns_timeout_ms: Duration to listen for mDNS (ms, default 1000).
+          use_mdns: Send an active DNS-SD query before scanning (default False).
+            Responding hosts are probed with higher priority and include
+            ``info["source"] = "mdns"``. Adds latency equal to ``mdns_timeout_ms``.
+          mdns_timeout_ms: Duration to wait for mDNS responses (ms, default 1000).
+          response_filter: Bytes that must appear in the probe response for a
+            host to match (e.g., a device identifier). When ``None``, any
+            non-empty response is accepted. Has no effect when
+            ``probe_command`` is not set.
           cancellation_token: Token to cancel an in-progress sweep or watch.
         """
         ...
@@ -303,6 +299,13 @@ class TcpDiscovery:
     ) -> list[DeviceMatch]:
         """Scan subnets, calling ``callback`` as each device is found."""
         ...
+    async def discover_async(self) -> list[DeviceMatch]:
+        """Scan subnets and return devices that respond (async variant).
+
+        Equivalent to ``discover()`` but returns an awaitable suitable for use
+        in ``asyncio`` event loops.
+        """
+        ...
     def watch(
         self,
         on_added: Callable[[DeviceMatch], None],
@@ -313,5 +316,6 @@ class TcpDiscovery:
 
         Requires a ``cancellation_token`` to stop. Compares devices by address
         only, so dynamic probe responses do not cause spurious events.
+        Default poll interval is 30000 ms.
         """
         ...

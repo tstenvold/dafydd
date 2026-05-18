@@ -68,7 +68,7 @@ fn start_silent_server(rt: &Runtime) -> u16 {
                     // io_timeout fires.
                     tokio::spawn(async move {
                         let _stream = stream;
-                        tokio::time::sleep(Duration::from_secs(300)).await;
+                        tokio::time::sleep(Duration::from_mins(5)).await;
                     });
                 }
             }
@@ -77,6 +77,7 @@ fn start_silent_server(rt: &Runtime) -> u16 {
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn bench_tcp_scan(c: &mut Criterion) {
     let rt = Runtime::new().expect("tokio runtime");
     let echo_port = start_echo_server(&rt, b"OK");
@@ -113,6 +114,7 @@ fn bench_tcp_scan(c: &mut Criterion) {
                             false, // loopback — ARP cache yields nothing useful
                             None,
                             None,
+                            None, // response_filter
                         )
                         .await
                         .expect("scan failed");
@@ -140,6 +142,7 @@ fn bench_tcp_scan(c: &mut Criterion) {
                     false, // loopback — ARP cache yields nothing useful
                     None,
                     None,
+                    None, // response_filter
                 )
                 .await
                 .expect("scan failed");
@@ -165,6 +168,7 @@ fn bench_tcp_scan(c: &mut Criterion) {
                 true,
                 None,
                 None,
+                None, // response_filter
             )
             .await
             .expect("scan failed");
@@ -195,6 +199,7 @@ fn bench_tcp_scan(c: &mut Criterion) {
                             false, // loopback — ARP cache yields nothing useful
                             None,
                             None,
+                            None, // response_filter
                         )
                         .await
                         .expect("scan failed");
@@ -220,6 +225,7 @@ fn bench_tcp_scan(c: &mut Criterion) {
                 false, // loopback — ARP cache yields nothing useful
                 None,
                 None,
+                None, // response_filter
             )
             .await
             .expect("scan failed");

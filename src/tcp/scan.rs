@@ -147,10 +147,11 @@ fn set_tcp_fast_open_connect(socket: &TcpSocket) {
 ///
 /// When `probe` is `None`, a successful connection alone counts as a match
 /// (reachability check). When `probe` is `Some`, the probe bytes are written
-/// and any non-empty response is returned as a match.
+/// and any non-empty response (optionally matching `response_filter`) is
+/// returned as a match.
 ///
 /// Returns `Ok(Some(_))` on a match, `Ok(None)` on timeout, connection
-/// refused, or an empty response to a probe.
+/// refused, or a response that does not satisfy the filter.
 ///
 /// # Errors
 ///
@@ -161,26 +162,29 @@ pub async fn probe_addr(
     connect_timeout: Duration,
     io_timeout: Duration,
     hostname_hint: Option<&str>,
+    response_filter: Option<&[u8]>,
 ) -> Result<Option<DeviceMatch>> {
     let Some(stream) = connect_with_opts(addr, connect_timeout).await else {
         return Ok(None);
     };
 
     if let Some(p) = probe {
-        probe_stream(stream, addr, p, io_timeout, hostname_hint).await
+        probe_stream(stream, addr, p, io_timeout, hostname_hint, response_filter).await
     } else {
         Ok(Some(build_match(addr, b"", hostname_hint)))
     }
 }
 
 /// Write `probe` to `stream`, then read until the connection closes or
-/// `io_timeout` elapses. Returns the accumulated response.
+/// `io_timeout` elapses. Returns the accumulated response if it is non-empty
+/// and satisfies `response_filter` (when set).
 async fn probe_stream(
     mut stream: TcpStream,
     addr: SocketAddr,
     probe: &[u8],
     io_timeout: Duration,
     hostname_hint: Option<&str>,
+    response_filter: Option<&[u8]>,
 ) -> Result<Option<DeviceMatch>> {
     let result = timeout(io_timeout, async {
         stream.write_all(probe).await?;
@@ -204,10 +208,16 @@ async fn probe_stream(
     };
 
     if response.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(build_match(addr, &response, hostname_hint)))
+        return Ok(None);
     }
+
+    if let Some(f) = response_filter {
+        if !response.windows(f.len()).any(|w| w == f) {
+            return Ok(None);
+        }
+    }
+
+    Ok(Some(build_match(addr, &response, hostname_hint)))
 }
 
 fn build_match(addr: SocketAddr, response: &[u8], hostname_hint: Option<&str>) -> DeviceMatch {
@@ -243,6 +253,7 @@ pub async fn probe_host(
     probe: Option<&[u8]>,
     connect_timeout: Duration,
     io_timeout: Duration,
+    response_filter: Option<Arc<[u8]>>,
 ) -> Result<Vec<DeviceMatch>> {
     if ports.is_empty() {
         return Ok(Vec::new());
@@ -268,6 +279,7 @@ pub async fn probe_host(
             let sock_addr = SocketAddr::new(addr.ip(), port);
             let probe = probe_arc.clone();
             let host_hint = host_owned.clone();
+            let filter = response_filter.clone();
             set.spawn(async move {
                 probe_addr(
                     sock_addr,
@@ -275,6 +287,7 @@ pub async fn probe_host(
                     connect_timeout,
                     io_timeout,
                     Some(&host_hint),
+                    filter.as_deref(),
                 )
                 .await
             });
@@ -379,6 +392,7 @@ pub async fn scan_subnets(
     use_arp: bool,
     cancel: Option<&CancellationToken>,
     tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,
+    response_filter: Option<Arc<[u8]>>,
 ) -> Result<Vec<DeviceMatch>> {
     if ports.is_empty() {
         return Ok(Vec::new());
@@ -407,22 +421,19 @@ pub async fn scan_subnets(
         .collect();
 
     if !arp_addrs.is_empty() {
-        for mut m in run_batch(
+        run_priority_batch(
             arp_addrs,
             &sem,
             probe_arc.as_ref(),
             connect_timeout,
             io_timeout,
             cancel,
+            response_filter.as_ref(),
+            "arp_cache",
+            tx,
+            &mut matches,
         )
-        .await
-        {
-            m.info.insert("source".to_owned(), "arp_cache".to_owned());
-            if let Some(sender) = tx {
-                let _ = sender.try_send(m.clone());
-            }
-            matches.push(m);
-        }
+        .await;
     }
 
     if cancel.is_some_and(CancellationToken::is_cancelled) {
@@ -430,22 +441,19 @@ pub async fn scan_subnets(
     }
 
     if !heuristic_addrs.is_empty() {
-        for mut m in run_batch(
+        run_priority_batch(
             heuristic_addrs,
             &sem,
             probe_arc.as_ref(),
             connect_timeout,
             io_timeout,
             cancel,
+            response_filter.as_ref(),
+            "heuristic",
+            tx,
+            &mut matches,
         )
-        .await
-        {
-            m.info.insert("source".to_owned(), "heuristic".to_owned());
-            if let Some(sender) = tx {
-                let _ = sender.try_send(m.clone());
-            }
-            matches.push(m);
-        }
+        .await;
     }
 
     if cancel.is_some_and(CancellationToken::is_cancelled) {
@@ -483,6 +491,7 @@ pub async fn scan_subnets(
             connect_timeout,
             io_timeout,
             cancel,
+            response_filter.as_ref(),
         )
         .await;
 
@@ -497,7 +506,42 @@ pub async fn scan_subnets(
     Ok(matches)
 }
 
+/// Probe a priority batch, tag each match with `source`, forward to `tx`, and
+/// append to `matches`.
+#[allow(clippy::too_many_arguments)]
+async fn run_priority_batch(
+    addrs: Vec<SocketAddr>,
+    sem: &Arc<Semaphore>,
+    probe_arc: Option<&Arc<[u8]>>,
+    connect_timeout: Duration,
+    io_timeout: Duration,
+    cancel: Option<&CancellationToken>,
+    response_filter: Option<&Arc<[u8]>>,
+    source_tag: &str,
+    tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,
+    matches: &mut Vec<DeviceMatch>,
+) {
+    for mut m in run_batch(
+        addrs,
+        sem,
+        probe_arc,
+        connect_timeout,
+        io_timeout,
+        cancel,
+        response_filter,
+    )
+    .await
+    {
+        m.info.insert("source".to_owned(), source_tag.to_owned());
+        if let Some(sender) = tx {
+            let _ = sender.try_send(m.clone());
+        }
+        matches.push(m);
+    }
+}
+
 /// Probe a batch of addresses under the given semaphore and return all matches.
+#[allow(clippy::too_many_arguments)]
 async fn run_batch(
     addrs: Vec<SocketAddr>,
     sem: &Arc<Semaphore>,
@@ -505,6 +549,7 @@ async fn run_batch(
     connect_timeout: Duration,
     io_timeout: Duration,
     cancel: Option<&CancellationToken>,
+    response_filter: Option<&Arc<[u8]>>,
 ) -> Vec<DeviceMatch> {
     let mut set: JoinSet<Result<Option<DeviceMatch>>> = JoinSet::new();
 
@@ -514,9 +559,18 @@ async fn run_batch(
         }
         let sem = Arc::clone(sem);
         let probe = probe_arc.cloned();
+        let filter = response_filter.cloned();
         set.spawn(async move {
             let _permit = sem.acquire_owned().await;
-            probe_addr(addr, probe.as_deref(), connect_timeout, io_timeout, None).await
+            probe_addr(
+                addr,
+                probe.as_deref(),
+                connect_timeout,
+                io_timeout,
+                None,
+                filter.as_deref(),
+            )
+            .await
         });
     }
 

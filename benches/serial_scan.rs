@@ -26,6 +26,7 @@ fn bench_serial_scan(c: &mut Criterion) {
                 None,
                 None,
                 None,
+                None, // response_filter
             )
             .await;
             std::hint::black_box(res)
@@ -47,6 +48,7 @@ fn bench_serial_scan(c: &mut Criterion) {
                 None,
                 None,
                 None,
+                None, // response_filter
             )
             .await;
             std::hint::black_box(res)
@@ -72,6 +74,7 @@ fn bench_serial_scan(c: &mut Criterion) {
                 None,
                 None,
                 None,
+                None, // response_filter
             )
             .await;
             std::hint::black_box(res)

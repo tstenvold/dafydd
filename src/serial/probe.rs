@@ -7,7 +7,7 @@
 
 use crate::{
     error::{DafyddError, Result},
-    types::{CancellationToken, DeviceMatch, Transport},
+    types::{DeviceMatch, Transport},
 };
 use smallvec::SmallVec;
 use std::{collections::HashMap, sync::Arc, time::Duration};
@@ -119,11 +119,58 @@ async fn read_response(
     response
 }
 
+/// Enumerate available serial ports without opening them.
+///
+/// Applies the same Bluetooth exclusion and macOS tty-dedup logic as
+/// [`sweep_all_ports`]. Returns one [`DeviceMatch`] per port with
+/// `response: None` and an empty `info` map — no port is opened.
+///
+/// # Errors
+///
+/// Returns [`DafyddError::Serial`] if the system port list cannot be read.
+pub fn list_all_ports(
+    include_bluetooth: bool,
+    port_filter: Option<&str>,
+) -> Result<Vec<DeviceMatch>> {
+    let mut ports = serialport::available_ports().map_err(DafyddError::Serial)?;
+
+    if !include_bluetooth {
+        ports.retain(|p| !matches!(p.port_type, serialport::SerialPortType::BluetoothPort));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let cu_suffixes: std::collections::HashSet<String> = ports
+            .iter()
+            .filter_map(|p| p.port_name.strip_prefix("/dev/cu.").map(str::to_owned))
+            .collect();
+        ports.retain(|p| {
+            p.port_name
+                .strip_prefix("/dev/tty.")
+                .is_none_or(|suffix| !cu_suffixes.contains(suffix))
+        });
+    }
+
+    if let Some(filter) = port_filter {
+        ports.retain(|p| p.port_name.contains(filter));
+    }
+
+    Ok(ports
+        .into_iter()
+        .map(|p| DeviceMatch {
+            transport: Transport::Serial,
+            address: p.port_name,
+            response: None,
+            info: HashMap::new(),
+        })
+        .collect())
+}
+
 /// Probe `port` at `baud`, send `probe`, and collect the response.
 ///
-/// Returns `Ok(Some(_))` when any bytes are received, `Ok(None)` when the
-/// device does not respond within `timeout`. A `DafyddError::Serial` is
-/// returned only when the port cannot be opened — simple I/O errors are
+/// Returns `Ok(Some(_))` when any bytes are received (and satisfy
+/// `response_filter` when set), `Ok(None)` otherwise. A `DafyddError::Serial`
+/// is returned only when the port cannot be opened — simple I/O errors are
 /// treated as no-response so every baud rate still gets a chance.
 ///
 /// # Errors
@@ -140,6 +187,7 @@ pub async fn probe_port(
     stop_bits: Option<u8>,
     flow_control: Option<&str>,
     response_terminator: Option<&[u8]>,
+    response_filter: Option<&[u8]>,
 ) -> Result<Option<DeviceMatch>> {
     let mut serial = build_builder(port, baud, data_bits, parity, stop_bits, flow_control)?
         .open_native_async()
@@ -153,6 +201,12 @@ pub async fn probe_port(
     let response = read_response(&mut serial, read_timeout, response_terminator).await;
     if response.is_empty() {
         return Ok(None);
+    }
+
+    if let Some(f) = response_filter {
+        if !response.windows(f.len()).any(|w| w == f) {
+            return Ok(None);
+        }
     }
 
     let mut info = HashMap::with_capacity(4);
@@ -211,6 +265,7 @@ pub async fn probe_port_all_bauds(
     flow_control: Option<String>,
     cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     response_terminator: Option<Arc<[u8]>>,
+    response_filter: Option<Arc<[u8]>>,
 ) -> Result<Option<DeviceMatch>> {
     if bauds.is_empty() {
         return Ok(None);
@@ -251,6 +306,12 @@ pub async fn probe_port_all_bauds(
             read_response(&mut serial, read_timeout, response_terminator.as_deref()).await;
         if response.is_empty() {
             continue;
+        }
+
+        if let Some(ref f) = response_filter {
+            if !response.windows(f.len()).any(|w| w == f.as_ref()) {
+                continue;
+            }
         }
 
         let mut info = HashMap::with_capacity(4);
@@ -308,6 +369,7 @@ fn probe_port_all_bauds_sync(
     flow_control: Option<&String>,
     cancel: Option<&Arc<std::sync::atomic::AtomicBool>>,
     response_terminator: Option<&Arc<[u8]>>,
+    response_filter: Option<&Arc<[u8]>>,
 ) -> Result<Option<DeviceMatch>> {
     use std::io::{Read, Write};
 
@@ -366,6 +428,12 @@ fn probe_port_all_bauds_sync(
 
         if response.is_empty() {
             continue;
+        }
+
+        if let Some(f) = response_filter {
+            if !response.windows(f.len()).any(|w| w == f.as_ref()) {
+                continue;
+            }
         }
 
         let mut info = HashMap::with_capacity(4);
@@ -436,9 +504,10 @@ pub async fn sweep_all_ports(
     stop_bits: Option<u8>,
     flow_control: Option<String>,
     port_filter: Option<&str>,
-    cancel: Option<&CancellationToken>,
+    cancel: Option<&crate::types::CancellationToken>,
     tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,
     response_terminator: Option<Arc<[u8]>>,
+    response_filter: Option<Arc<[u8]>>,
 ) -> Result<Vec<DeviceMatch>> {
     let mut ports = serialport::available_ports().map_err(DafyddError::Serial)?;
 
@@ -474,7 +543,7 @@ pub async fn sweep_all_ports(
 
     let mut set: JoinSet<Result<Option<DeviceMatch>>> = JoinSet::new();
     for port_info in ports {
-        if cancel.is_some_and(CancellationToken::is_cancelled) {
+        if cancel.is_some_and(crate::types::CancellationToken::is_cancelled) {
             break;
         }
 
@@ -485,6 +554,7 @@ pub async fn sweep_all_ports(
         let flow_control = flow_control.clone();
         let cancel_arc = cancel.map(|c| Arc::clone(&c.inner()));
         let terminator = response_terminator.clone();
+        let filter = response_filter.clone();
 
         set.spawn(async move {
             let handle = spawn_blocking(move || {
@@ -499,6 +569,7 @@ pub async fn sweep_all_ports(
                     flow_control.as_ref(),
                     cancel_arc.as_ref(),
                     terminator.as_ref(),
+                    filter.as_ref(),
                 )
             });
             match timeout(open_budget, handle).await {
@@ -510,7 +581,7 @@ pub async fn sweep_all_ports(
 
     let mut matches = Vec::new();
     while let Some(result) = set.join_next().await {
-        if cancel.is_some_and(CancellationToken::is_cancelled) {
+        if cancel.is_some_and(crate::types::CancellationToken::is_cancelled) {
             set.abort_all();
             break;
         }

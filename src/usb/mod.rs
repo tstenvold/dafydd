@@ -179,6 +179,43 @@ impl UsbDiscovery {
         })
     }
 
+    /// Run discovery as a Python coroutine, returning all matches when awaited.
+    ///
+    /// Equivalent to `discover()` but non-blocking — suitable for use in
+    /// `asyncio` event loops without `run_in_executor`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`pyo3::PyErr`] if device enumeration fails.
+    pub fn discover_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let vid = self.vid;
+        let pid = self.pid;
+        let mfg_filter = self.manufacturer.clone();
+        let prod_filter = self.product_string.clone();
+        let sn_filter = self.serial_number.clone();
+        let class_filter = self.device_class;
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let devices = nusb::list_devices()
+                .await
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            Ok(devices
+                .filter(|d| {
+                    apply_filters(
+                        d,
+                        vid,
+                        pid,
+                        mfg_filter.as_deref(),
+                        prod_filter.as_deref(),
+                        sn_filter.as_deref(),
+                        class_filter,
+                    )
+                })
+                .map(|d| build_device_match(&d))
+                .collect::<Vec<_>>())
+        })
+    }
+
     /// Run discovery and call `callback(match)` for each device found.
     ///
     /// # Errors
