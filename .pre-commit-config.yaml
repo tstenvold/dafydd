@@ -1,0 +1,85 @@
+# Run `pre-commit install` once to activate.
+# Hooks mirror the CI pipeline (lint + test jobs) so a local commit cannot
+# pass here and fail on GitHub Actions.
+#
+# Slow hooks (maturin build, pytest) are on the `pre-push` stage so normal
+# commits stay fast. Run `pre-commit install --hook-type pre-push` to also
+# install the push hook.
+repos:
+  - repo: local
+    hooks:
+      # ── Rust: format ──────────────────────────────────────────────────
+      - id: cargo-fmt
+        name: "rust · fmt"
+        language: system
+        entry: cargo fmt -- --check
+        types: [rust]
+        pass_filenames: false
+
+      # ── Rust: clippy ──────────────────────────────────────────────────
+      - id: cargo-clippy
+        name: "rust · clippy"
+        language: system
+        entry: cargo clippy --lib --bins --tests -- -D warnings
+        types: [rust]
+        pass_filenames: false
+
+      # ── Rust: rustdoc ─────────────────────────────────────────────────
+      - id: cargo-doc
+        name: "rust · doc"
+        language: system
+        entry: bash
+        args: ["-c", "RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --document-private-items"]
+        types: [rust]
+        pass_filenames: false
+
+      # ── Python: ruff format ────────────────────────────────────────────
+      - id: ruff-format
+        name: "python · ruff format"
+        language: system
+        entry: uv run --with ruff ruff format tests/ python/ --check
+        types: [python]
+        pass_filenames: false
+
+      # ── Python: ruff lint ──────────────────────────────────────────────
+      - id: ruff-check
+        name: "python · ruff check"
+        language: system
+        entry: uv run --with ruff ruff check tests/ python/
+        types: [python]
+        pass_filenames: false
+
+      # ── Python: pyright ────────────────────────────────────────────────
+      - id: pyright
+        name: "python · pyright"
+        language: system
+        entry: uv run --with pyright --with pytest pyright tests/ python/
+        types: [python]
+        pass_filenames: false
+
+      # ── Rust: tests ────────────────────────────────────────── pre-push ─
+      - id: cargo-test
+        name: "rust · test"
+        language: system
+        entry: cargo test --lib --tests
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+      # ── Python: rebuild wheel ──────────────────────────────── pre-push ─
+      - id: maturin-develop
+        name: "python · build wheel"
+        language: system
+        entry: uv run --with maturin maturin develop --release
+        types_or: [rust, python]
+        pass_filenames: false
+        stages: [pre-push]
+
+      # ── Python: pytest ─────────────────────────────────────── pre-push ─
+      - id: pytest
+        name: "python · pytest"
+        language: system
+        entry: uv run pytest tests/ -x --tb=short
+        types_or: [rust, python]
+        pass_filenames: false
+        stages: [pre-push]

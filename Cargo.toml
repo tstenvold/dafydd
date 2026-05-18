@@ -1,0 +1,67 @@
+[package]
+name = "dafydd"
+version = "0.1.0"
+edition = "2021"
+description = "Device discovery over Serial, USB, and TCP/IP — Python bindings via PyO3"
+license = "MIT"
+rust-version = "1.95"
+
+[lib]
+name = "dafydd"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+serialport = "4"
+tokio-serial = "5"
+nusb = { version = "0.2", features = ["tokio"] }
+if-addrs = "0.15"
+ipnet = "2"
+thiserror = "2"
+tracing = "0.1"
+socket2 = { version = "0.6", features = ["all"] }
+smallvec = { version = "1", features = ["union"] }
+futures-util = { version = "0.3", default-features = false }
+
+[features]
+default = []
+tcp-fast-open = []
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["async_tokio", "html_reports"] }
+
+[[bench]]
+name = "tcp_scan"
+harness = false
+
+[[bench]]
+name = "serial_scan"
+harness = false
+
+[[bench]]
+name = "usb_scan"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+opt-level = 1
+
+[lints.rust]
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+# SerialDiscovery in serial::, TcpDiscovery in tcp:: etc. is intentional naming.
+module_name_repetitions = "allow"
+# PyO3's #[pymethods] macro generates wrapper code that converts PyResult<T>
+# with an identity `.into()`, triggering this lint as a false positive.
+# There is no way to suppress it with a targeted #[allow] on user-written code.
+useless_conversion = "allow"
