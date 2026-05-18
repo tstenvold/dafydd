@@ -111,7 +111,7 @@ jobs:
           merge-multiple: true
           path: dist/
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
