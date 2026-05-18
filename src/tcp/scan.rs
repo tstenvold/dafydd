@@ -13,7 +13,7 @@ use std::os::fd::FromRawFd;
 use std::os::windows::io::FromRawSocket;
 use std::{
     collections::{HashMap, HashSet},
-    net::{Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
     time::Duration,
 };
@@ -358,30 +358,73 @@ fn build_priority_addrs(
     (arp_out, heuristic_out)
 }
 
+/// Use the UDP connect trick to determine the local IP used to reach `dst`.
+fn local_ip_for(dst: Ipv4Addr) -> Option<Ipv4Addr> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect(SocketAddr::from((dst, 80))).ok()?;
+    match s.local_addr().ok()? {
+        SocketAddr::V4(v4) => Some(*v4.ip()),
+        SocketAddr::V6(_) => None,
+    }
+}
+
+/// When raw-socket privilege is available (ICMP gave us alive hosts),
+/// attempt a raw SYN scan to further narrow down to open ports. Falls back
+/// to probing all alive × port combinations if SYN scan is unavailable.
+async fn build_raw_probe_targets(
+    alive: Vec<Ipv4Addr>,
+    ports: &[u16],
+    connect_timeout: Duration,
+) -> Vec<SocketAddr> {
+    let targets: Vec<(Ipv4Addr, u16)> = alive
+        .iter()
+        .flat_map(|&ip| ports.iter().map(move |&p| (ip, p)))
+        .collect();
+
+    let src = alive.first().and_then(|&ip| local_ip_for(ip));
+
+    let open = if let Some(src_ip) = src {
+        let t = targets.clone();
+        let syn_timeout = connect_timeout.max(Duration::from_millis(100));
+        tokio::task::spawn_blocking(move || crate::net::syn_scan::syn_scan(src_ip, &t, syn_timeout))
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+
+    open.map_or_else(
+        || {
+            targets
+                .into_iter()
+                .map(|(ip, p)| SocketAddr::from((ip, p)))
+                .collect()
+        },
+        |pairs| {
+            pairs
+                .into_iter()
+                .map(|(ip, p)| SocketAddr::from((ip, p)))
+                .collect()
+        },
+    )
+}
+
 /// Scan all hosts across multiple `subnets` on `ports` in parallel.
 ///
-/// Before the main linear sweep, a priority probe is run against:
-/// - Hosts currently in the kernel ARP cache (recently seen on the LAN).
-/// - Common device addresses (`.1`, `.100`, `.254`, etc.) within each subnet.
+/// Before the main sweep, a priority probe is run against ARP-cached hosts
+/// and common device addresses. Then, if raw-socket privilege is available,
+/// ICMP echo requests pre-filter the remaining hosts to only alive ones;
+/// on Linux a raw SYN scan further narrows to open ports. Without privilege,
+/// falls back to a full TCP sweep of all remaining addresses.
 ///
-/// Subnets are validated up-front before any I/O begins. Hosts are then
-/// yielded lazily — no full `Vec<SocketAddr>` is materialised upfront — and
-/// processed in batches to bound peak memory and task count.
-///
-/// `max_concurrent` caps live connections across both the priority probe and
-/// the main sweep.
-///
-/// When `cancel` is `Some` and the token is cancelled between batches, the
-/// sweep terminates early and returns whatever matches were found so far.
-///
-/// When `tx` is `Some`, each match is forwarded on the channel immediately as
-/// it is found (streaming mode) in addition to being returned in the `Vec`.
+/// `max_concurrent` caps live connections across the entire scan.
 ///
 /// # Errors
 ///
 /// Returns [`DafyddError::InvalidSubnet`] if any element of `subnets` is not
 /// valid CIDR notation.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub async fn scan_subnets(
     subnets: &[String],
     ports: &[u16],
@@ -460,46 +503,101 @@ pub async fn scan_subnets(
         return Ok(matches);
     }
 
-    // Main sweep — lazily iterate all host addresses, skip priority already done.
-    let mut host_iter = nets.into_iter().flat_map(move |net| {
-        let ports = ports.to_vec();
-        net.hosts().flat_map(move |h| {
-            let ports = ports.clone();
-            ports.into_iter().map(move |p| SocketAddr::new(h, p))
-        })
-    });
-
-    loop {
-        if cancel.is_some_and(CancellationToken::is_cancelled) {
-            break;
-        }
-
-        let batch: Vec<SocketAddr> = host_iter
-            .by_ref()
-            .filter(|a| !priority_addrs.contains(a))
-            .take(batch_size)
-            .collect();
-
-        if batch.is_empty() {
-            break;
-        }
-
-        let batch_matches = run_batch(
-            batch,
-            &sem,
-            probe_arc.as_ref(),
-            connect_timeout,
-            io_timeout,
-            cancel,
-            response_filter.as_ref(),
-        )
-        .await;
-
-        for m in batch_matches {
-            if let Some(sender) = tx {
-                let _ = sender.try_send(m.clone());
+    // Collect remaining hosts (IPs only — decouple from ports for ICMP sweep).
+    let remaining_ips: Vec<Ipv4Addr> = nets
+        .iter()
+        .flat_map(IpNet::hosts)
+        .filter_map(|h| {
+            if let IpAddr::V4(v4) = h {
+                Some(v4)
+            } else {
+                None
             }
-            matches.push(m);
+        })
+        .filter(|ip| {
+            ports
+                .iter()
+                .all(|&p| !priority_addrs.contains(&SocketAddr::from((*ip, p))))
+        })
+        .collect();
+
+    // ICMP pre-filter: ping all remaining hosts to find alive ones.
+    // Returns None when raw sockets are unavailable (no root/CAP_NET_RAW).
+    let icmp_timeout = connect_timeout
+        .saturating_mul(2)
+        .max(Duration::from_millis(100));
+    let alive_result = crate::net::icmp::ping_sweep(remaining_ips.clone(), icmp_timeout).await;
+
+    match alive_result {
+        Some(alive) if !alive.is_empty() => {
+            // Raw socket available — restrict sweep to alive hosts,
+            // then optionally to open ports via raw SYN.
+            let probe_targets = build_raw_probe_targets(alive, ports, connect_timeout).await;
+
+            if !probe_targets.is_empty() && !cancel.is_some_and(CancellationToken::is_cancelled) {
+                for m in run_batch(
+                    probe_targets,
+                    &sem,
+                    probe_arc.as_ref(),
+                    connect_timeout,
+                    io_timeout,
+                    cancel,
+                    response_filter.as_ref(),
+                )
+                .await
+                {
+                    if let Some(sender) = tx {
+                        let _ = sender.try_send(m.clone());
+                    }
+                    matches.push(m);
+                }
+            }
+        }
+        Some(_) => {
+            // ICMP available but no hosts replied — subnet is empty, skip sweep.
+        }
+        None => {
+            // No raw-socket privilege: full TCP sweep of remaining addresses.
+            let mut host_iter = nets.iter().flat_map(|net| {
+                let ports = ports.to_vec();
+                net.hosts().flat_map(move |h| {
+                    let ports = ports.clone();
+                    ports.into_iter().map(move |p| SocketAddr::new(h, p))
+                })
+            });
+
+            loop {
+                if cancel.is_some_and(CancellationToken::is_cancelled) {
+                    break;
+                }
+
+                let batch: Vec<SocketAddr> = host_iter
+                    .by_ref()
+                    .filter(|a| !priority_addrs.contains(a))
+                    .take(batch_size)
+                    .collect();
+
+                if batch.is_empty() {
+                    break;
+                }
+
+                for m in run_batch(
+                    batch,
+                    &sem,
+                    probe_arc.as_ref(),
+                    connect_timeout,
+                    io_timeout,
+                    cancel,
+                    response_filter.as_ref(),
+                )
+                .await
+                {
+                    if let Some(sender) = tx {
+                        let _ = sender.try_send(m.clone());
+                    }
+                    matches.push(m);
+                }
+            }
         }
     }
 

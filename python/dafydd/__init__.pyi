@@ -249,7 +249,7 @@ class TcpDiscovery:
         ports: list[int] = ...,
         subnets: list[str] = ...,
         probe_command: bytes | None = None,
-        connect_timeout_ms: int = 200,
+        connect_timeout_ms: int = 50,
         io_timeout_ms: int = 500,
         max_concurrent: int = 500,
         preferred_host: str | None = None,
@@ -258,6 +258,8 @@ class TcpDiscovery:
         use_arp_cache: bool = True,
         use_mdns: bool = False,
         mdns_timeout_ms: int = 1000,
+        use_ssdp: bool = False,
+        ssdp_timeout_ms: int = 1000,
         response_filter: bytes | None = None,
         cancellation_token: CancellationToken | None = None,
     ) -> None:
@@ -271,7 +273,8 @@ class TcpDiscovery:
           subnets: CIDR subnets to scan (default: auto-detect local subnets).
           probe_command: Bytes to send on connect; only hosts that respond are
             returned. Omit to match any host that accepts a TCP connection.
-          connect_timeout_ms: Timeout for the TCP handshake in milliseconds.
+          connect_timeout_ms: Timeout for the TCP handshake in milliseconds
+            (default 50 — sufficient for LAN where typical RTT is sub-1 ms).
           io_timeout_ms: Timeout for the probe write and response read (ms).
           max_concurrent: Max simultaneous open connections (default 500).
           preferred_host: Hostname or IP to probe before scanning subnets.
@@ -284,6 +287,11 @@ class TcpDiscovery:
             Responding hosts are probed with higher priority and include
             ``info["source"] = "mdns"``. Adds latency equal to ``mdns_timeout_ms``.
           mdns_timeout_ms: Duration to wait for mDNS responses (ms, default 1000).
+          use_ssdp: Send an SSDP M-SEARCH query before scanning (default False).
+            Finds UPnP-capable devices (routers, cameras, smart-home hardware).
+            Responding hosts are probed early and include
+            ``info["source"] = "ssdp"``. Adds latency equal to ``ssdp_timeout_ms``.
+          ssdp_timeout_ms: Duration to wait for SSDP responses (ms, default 1000).
           response_filter: Bytes that must appear in the probe response for a
             host to match (e.g., a device identifier). When ``None``, any
             non-empty response is accepted. Has no effect when
