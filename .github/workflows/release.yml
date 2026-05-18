@@ -145,13 +145,6 @@ jobs:
           assert m.vendor_id  == 0x04D8
           assert m.product_id == 0x000A
 
-          # Correlation helpers
-          assert dafydd.correlate_usb_serial([], []) == []
-          serial_ms, usb_ms, tcp_ms = dafydd.partition_by_transport([m])
-          assert usb_ms   == [m]
-          assert serial_ms == []
-          assert tcp_ms   == []
-
           # Live USB enumeration (validates the native extension loaded correctly)
           results = dafydd.UsbDiscovery().discover()
           assert isinstance(results, list)

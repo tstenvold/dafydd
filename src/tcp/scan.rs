@@ -35,22 +35,38 @@ const PRIORITY_LAST_OCTETS: &[u8] = &[1, 2, 10, 50, 100, 101, 200, 253, 254];
 /// Link-local addresses (`169.254.0.0/16`) and loopback are excluded.
 /// IPv6 interfaces are skipped; they are uncommon in embedded-device contexts.
 ///
+/// `max_prefix` is the broadest subnet width auto-detection will widen *to*:
+/// an interface whose native prefix is wider than `max_prefix` (e.g. /16 on
+/// a /24 limit) is clamped down to `max_prefix`. Narrower native prefixes
+/// are honoured as-is. `max_prefix` must be in `[16, 32]`; anything wider
+/// would sweep more than 65 k hosts per interface.
+///
 /// Returns an empty `Vec` if interface enumeration fails — callers should
 /// treat this as "nothing to sweep" rather than a hard error.
+///
+/// # Errors
+///
+/// Returns [`DafyddError::InvalidSubnet`] when `max_prefix` is outside
+/// `16..=32`.
 ///
 /// # Panics
 ///
 /// Never panics in practice; the `expect` guards a compile-time constant.
-#[must_use]
-pub fn local_subnets() -> Vec<String> {
+pub fn local_subnets(max_prefix: u8) -> Result<Vec<String>> {
+    if !(16..=32).contains(&max_prefix) {
+        return Err(DafyddError::InvalidSubnet(format!(
+            "subnet prefix /{max_prefix} out of range; must be /16..=/32 (max 65k hosts)"
+        )));
+    }
+
     let Ok(ifaces) = if_addrs::get_if_addrs() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
 
     let mut seen: HashSet<String> = HashSet::new();
     let link_local: Ipv4Net = "169.254.0.0/16".parse().expect("static CIDR is valid");
 
-    ifaces
+    Ok(ifaces
         .into_iter()
         .filter(|i| !i.is_loopback())
         .filter_map(|i| {
@@ -61,10 +77,11 @@ pub fn local_subnets() -> Vec<String> {
             if link_local.contains(&v4.ip) {
                 return None;
             }
-            // Clamp to /24 so auto-detection never scans more than 254 hosts
-            // per interface (a /16 would be 65 534 hosts — far too broad).
-            let net = if net.prefix_len() < 24 {
-                Ipv4Net::new(v4.ip, 24).unwrap_or(net)
+            // Clamp wider-than-max interfaces down to `max_prefix`; honour
+            // narrower ones as-is. Prevents accidental /16 sweeps when the
+            // caller asked for /24.
+            let net = if net.prefix_len() < max_prefix {
+                Ipv4Net::new(v4.ip, max_prefix).unwrap_or(net)
             } else {
                 net
             };
@@ -75,26 +92,34 @@ pub fn local_subnets() -> Vec<String> {
                 None
             }
         })
-        .collect()
+        .collect())
 }
 
 /// Establish a TCP connection with optimised socket options.
 ///
-/// Builds the socket via `socket2` to set `SO_LINGER = 0` before connecting.
-/// This makes the kernel send RST on close instead of going through `TIME_WAIT`,
-/// reclaiming the local port immediately. Critical for high-concurrency scans
-/// that would otherwise exhaust the ephemeral port range on a /16 sweep.
-/// Also sets `TCP_NODELAY` so probe bytes are sent in the first segment.
-/// On Linux with the `tcp-fast-open` feature, `TCP_FASTOPEN_CONNECT` is set.
-async fn connect_with_opts(addr: SocketAddr, connect_timeout: Duration) -> Option<TcpStream> {
+/// When `linger` is `Some(Duration::ZERO)` the kernel sends RST on close
+/// instead of going through `TIME_WAIT`, reclaiming the local port
+/// immediately. Useful for very wide sweeps that would otherwise exhaust
+/// the ephemeral port range. When `linger` is `None` no `SO_LINGER` is set
+/// — the kernel performs a graceful FIN close (the polite default). Also
+/// sets `TCP_NODELAY` so probe bytes are sent in the first segment. On
+/// Linux with the `tcp-fast-open` feature, `TCP_FASTOPEN_CONNECT` is set.
+async fn connect_with_opts(
+    addr: SocketAddr,
+    connect_timeout: Duration,
+    linger: Option<Duration>,
+) -> Option<TcpStream> {
     let domain = match addr {
         SocketAddr::V4(_) => Domain::IPV4,
         SocketAddr::V6(_) => Domain::IPV6,
     };
 
     let s2 = S2Socket::new(domain, Type::STREAM, Some(Protocol::TCP)).ok()?;
-    // linger=0: RST on close, no TIME_WAIT.
-    s2.set_linger(Some(Duration::ZERO)).ok()?;
+    if let Some(d) = linger {
+        // linger=Some(0): RST on close, no TIME_WAIT (fast, antisocial).
+        // linger=Some(n>0): block close for up to n seconds.
+        s2.set_linger(Some(d)).ok()?;
+    }
     s2.set_nonblocking(true).ok()?;
 
     // Convert socket2::Socket → tokio::net::TcpSocket via raw handle.
@@ -156,6 +181,7 @@ fn set_tcp_fast_open_connect(socket: &TcpSocket) {
 /// # Errors
 ///
 /// Returns [`DafyddError::Io`] for unexpected I/O failures during the probe.
+#[allow(clippy::too_many_arguments)]
 pub async fn probe_addr(
     addr: SocketAddr,
     probe: Option<&[u8]>,
@@ -163,8 +189,9 @@ pub async fn probe_addr(
     io_timeout: Duration,
     hostname_hint: Option<&str>,
     response_filter: Option<&[u8]>,
+    linger: Option<Duration>,
 ) -> Result<Option<DeviceMatch>> {
-    let Some(stream) = connect_with_opts(addr, connect_timeout).await else {
+    let Some(stream) = connect_with_opts(addr, connect_timeout, linger).await else {
         return Ok(None);
     };
 
@@ -247,6 +274,7 @@ fn build_match(addr: SocketAddr, response: &[u8], hostname_hint: Option<&str>) -
 /// # Errors
 ///
 /// Propagates [`DafyddError::Io`] for unexpected I/O failures during probing.
+#[allow(clippy::too_many_arguments)]
 pub async fn probe_host(
     host: &str,
     ports: &[u16],
@@ -254,6 +282,7 @@ pub async fn probe_host(
     connect_timeout: Duration,
     io_timeout: Duration,
     response_filter: Option<Arc<[u8]>>,
+    linger: Option<Duration>,
 ) -> Result<Vec<DeviceMatch>> {
     if ports.is_empty() {
         return Ok(Vec::new());
@@ -288,6 +317,7 @@ pub async fn probe_host(
                     io_timeout,
                     Some(&host_hint),
                     filter.as_deref(),
+                    linger,
                 )
                 .await
             });
@@ -305,8 +335,9 @@ pub async fn probe_host(
 
 /// Build priority address lists to probe before the linear sweep.
 ///
-/// Returns `(arp_addrs, heuristic_addrs)`:
+/// Returns `(arp_addrs, arp_macs, heuristic_addrs)`:
 /// - `arp_addrs`: Hosts from the kernel ARP cache, tagged `source=arp_cache`.
+/// - `arp_macs`: `Ipv4Addr → MAC` map for stamping `info["mac"]` on matches.
 /// - `heuristic_addrs`: Common last-octet addresses (`.1`, `.100`, `.254`, …)
 ///   not already covered by `arp_addrs`.
 ///
@@ -315,14 +346,20 @@ fn build_priority_addrs(
     nets: &[IpNet],
     ports: &[u16],
     use_arp: bool,
-) -> (Vec<SocketAddr>, Vec<SocketAddr>) {
+) -> (
+    Vec<SocketAddr>,
+    HashMap<Ipv4Addr, crate::net::arp::MacAddr>,
+    Vec<SocketAddr>,
+) {
     let mut arp_seen: HashSet<SocketAddr> = HashSet::new();
     let mut arp_out: Vec<SocketAddr> = Vec::new();
+    let mut arp_macs: HashMap<Ipv4Addr, crate::net::arp::MacAddr> = HashMap::new();
 
     if use_arp {
-        for ip in crate::net::arp::arp_cache_hosts() {
+        for (ip, mac) in crate::net::arp::arp_cache_hosts() {
             for net in nets {
                 if net.contains(&std::net::IpAddr::V4(ip)) {
+                    arp_macs.insert(ip, mac);
                     for &port in ports {
                         let sa = SocketAddr::from((ip, port));
                         if arp_seen.insert(sa) {
@@ -355,7 +392,7 @@ fn build_priority_addrs(
         }
     }
 
-    (arp_out, heuristic_out)
+    (arp_out, arp_macs, heuristic_out)
 }
 
 /// Use the UDP connect trick to determine the local IP used to reach `dst`.
@@ -436,6 +473,7 @@ pub async fn scan_subnets(
     cancel: Option<&CancellationToken>,
     tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,
     response_filter: Option<Arc<[u8]>>,
+    linger: Option<Duration>,
 ) -> Result<Vec<DeviceMatch>> {
     if ports.is_empty() {
         return Ok(Vec::new());
@@ -456,7 +494,7 @@ pub async fn scan_subnets(
     let mut matches = Vec::new();
 
     // Priority probe: ARP cache first (tagged), then common-octet heuristics.
-    let (arp_addrs, heuristic_addrs) = build_priority_addrs(&nets, ports, use_arp);
+    let (arp_addrs, arp_macs, heuristic_addrs) = build_priority_addrs(&nets, ports, use_arp);
     let priority_addrs: HashSet<SocketAddr> = arp_addrs
         .iter()
         .chain(heuristic_addrs.iter())
@@ -475,6 +513,8 @@ pub async fn scan_subnets(
             "arp_cache",
             tx,
             &mut matches,
+            linger,
+            Some(&arp_macs),
         )
         .await;
     }
@@ -495,6 +535,8 @@ pub async fn scan_subnets(
             "heuristic",
             tx,
             &mut matches,
+            linger,
+            None,
         )
         .await;
     }
@@ -543,6 +585,7 @@ pub async fn scan_subnets(
                     io_timeout,
                     cancel,
                     response_filter.as_ref(),
+                    linger,
                 )
                 .await
                 {
@@ -589,6 +632,7 @@ pub async fn scan_subnets(
                     io_timeout,
                     cancel,
                     response_filter.as_ref(),
+                    linger,
                 )
                 .await
                 {
@@ -604,8 +648,8 @@ pub async fn scan_subnets(
     Ok(matches)
 }
 
-/// Probe a priority batch, tag each match with `source`, forward to `tx`, and
-/// append to `matches`.
+/// Probe a priority batch, tag each match with `source`, attach the MAC from
+/// `arp_macs` when present, forward to `tx`, and append to `matches`.
 #[allow(clippy::too_many_arguments)]
 async fn run_priority_batch(
     addrs: Vec<SocketAddr>,
@@ -618,6 +662,8 @@ async fn run_priority_batch(
     source_tag: &str,
     tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,
     matches: &mut Vec<DeviceMatch>,
+    linger: Option<Duration>,
+    arp_macs: Option<&HashMap<Ipv4Addr, crate::net::arp::MacAddr>>,
 ) {
     for mut m in run_batch(
         addrs,
@@ -627,10 +673,21 @@ async fn run_priority_batch(
         io_timeout,
         cancel,
         response_filter,
+        linger,
     )
     .await
     {
         m.info.insert("source".to_owned(), source_tag.to_owned());
+        if let Some(macs) = arp_macs {
+            if let Ok(addr) = m.address.parse::<SocketAddr>() {
+                if let IpAddr::V4(v4) = addr.ip() {
+                    if let Some(mac) = macs.get(&v4) {
+                        m.info
+                            .insert("mac".to_owned(), crate::net::arp::format_mac(mac));
+                    }
+                }
+            }
+        }
         if let Some(sender) = tx {
             let _ = sender.try_send(m.clone());
         }
@@ -648,6 +705,7 @@ async fn run_batch(
     io_timeout: Duration,
     cancel: Option<&CancellationToken>,
     response_filter: Option<&Arc<[u8]>>,
+    linger: Option<Duration>,
 ) -> Vec<DeviceMatch> {
     let mut set: JoinSet<Result<Option<DeviceMatch>>> = JoinSet::new();
 
@@ -667,6 +725,7 @@ async fn run_batch(
                 io_timeout,
                 None,
                 filter.as_deref(),
+                linger,
             )
             .await
         });
@@ -711,8 +770,22 @@ mod tests {
     }
 
     #[test]
-    fn test_local_subnets_never_panics() {
-        let _subnets = local_subnets();
+    fn test_local_subnets_default_never_panics() {
+        let _subnets = local_subnets(24).expect("/24 is in [16, 32]");
+    }
+
+    #[test]
+    fn test_local_subnets_rejects_out_of_range() {
+        assert!(local_subnets(15).is_err());
+        assert!(local_subnets(33).is_err());
+        assert!(local_subnets(0).is_err());
+    }
+
+    #[test]
+    fn test_local_subnets_accepts_full_range() {
+        for p in 16u8..=32 {
+            assert!(local_subnets(p).is_ok(), "/{p} should be accepted");
+        }
     }
 
     #[test]

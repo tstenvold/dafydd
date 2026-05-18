@@ -233,6 +233,7 @@ dependencies = [
  "futures-util",
  "if-addrs",
  "ipnet",
+ "libc",
  "nusb",
  "pyo3",
  "pyo3-async-runtimes",
@@ -243,6 +244,7 @@ dependencies = [
  "tokio",
  "tokio-serial",
  "tracing",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1150,6 +1152,15 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets",
 ]
