@@ -10,7 +10,8 @@ readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
 license-files = ["LICENSE"]
-keywords = ["serial", "usb", "tcp", "discovery", "hardware"]
+keywords = ["serial", "usb", "tcp", "discovery", "hardware", "embedded", "iot"]
+authors = [{ name = "Terence Stenvold", email = "tstenvold@gmail.com" }]
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Rust",
@@ -19,7 +20,16 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: System :: Hardware",
+    "Topic :: System :: Networking",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
 ]
+
+[project.urls]
+Homepage = "https://github.com/tstenvold/dafydd"
+Repository = "https://github.com/tstenvold/dafydd"
+Changelog = "https://github.com/tstenvold/dafydd/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/tstenvold/dafydd/issues"
 
 [project.optional-dependencies]
 dev = ["maturin>=1.7,<2", "pytest>=8.0", "pytest-timeout", "ruff", "pyright"]

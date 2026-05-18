@@ -1,123 +1,167 @@
 # Dafydd
 
 [![CI](https://img.shields.io/github/actions/workflow/status/tstenvold/dafydd/ci.yml?branch=main&label=CI)](https://github.com/tstenvold/dafydd/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/dafydd)](https://pypi.org/project/dafydd/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Rust](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org/)
 
-**Fast Device Discovery over Serial, USB, and TCP/IP.**
+**Fast device discovery over Serial, USB, and TCP/IP.**
 
-Dafydd is a native Rust library offering highly concurrent and lightning-fast physical device probing with convenient Python bindings via PyO3. Perfect for hardware automation, device enumeration, and network scanning.
+Dafydd is a Rust library with Python bindings (via PyO3) for probing and enumerating physical hardware. It sweeps serial ports, USB buses, and TCP subnets concurrently — returning structured results with transport-specific metadata.
 
 ## Features
 
-- **Parallel Transport Scanning**: Sweeps Serial, USB, and TCP/IP endpoints concurrently with configurable rate limits
-- **Probe & Response Matching**: Send custom command bytes and match device responses to identify hardware
-- **Preferred Address Fast Path**: Try a known device address first, sweep as fallback
-- **No System Dependencies**: Pure Rust (no libusb, no extra drivers), PyO3 for Python interop
-- **Tokio-powered**: Efficient async I/O with a global shared runtime — no per-call startup cost
+- **Three transports, one API**: Serial, USB, and TCP discovery share the same `DeviceMatch` result type and discovery interface
+- **Preferred-address fast path**: Try a known port/host first; fall back to a full sweep only if it fails
+- **Streaming and watch modes**: Get results as they arrive via callbacks, or poll for hot-plug events
+- **Probe & response matching**: Send custom bytes and filter devices by their response
+- **ARP cache and mDNS acceleration**: On TCP, prioritise hosts already in the ARP table or announcing via mDNS
+- **No extra system dependencies**: Pure Rust (no libpcap, no libusb), PyO3 for Python interop
+- **Tokio-powered**: Shared async runtime — no per-call startup cost
 
 ## Installation
 
 ```bash
-# From source (requires Rust 1.95+, Python 3.11+)
-pip install -e .
-uv run maturin develop --release
-
-# From PyPI (once published)
 pip install dafydd
+```
+
+To build from source (requires Rust 1.95+):
+
+```bash
+uv sync
+uv run maturin develop --release
 ```
 
 ## Quick Start
 
-### TCP Discovery
+### TCP
 
 ```python
-from dafydd import TcpDiscovery
+import dafydd
 
-discoverer = TcpDiscovery(
+# Scan local subnets for hosts accepting connections on port 502 (Modbus)
+devices = dafydd.TcpDiscovery(port=502).discover()
+
+# With a probe command: only return hosts that respond
+devices = dafydd.TcpDiscovery(
     port=8080,
     subnets=["192.168.1.0/24"],
     probe_command=b"PING",
-    timeout_ms=200,
-)
-devices = discoverer.discover()
+    connect_timeout_ms=200,
+    io_timeout_ms=500,
+).discover()
 
-for device in devices:
-    print(f"{device.address}: {device.response}")
+for d in devices:
+    print(f"{d.host}:{d.port}  {d.response}")
 ```
 
-### Serial Discovery
+### Serial
 
 ```python
-from dafydd import SerialDiscovery
+import dafydd
 
-discoverer = SerialDiscovery(
+# Sweep all ports at common baud rates
+devices = dafydd.SerialDiscovery(
     probe_command=b"*IDN?\r\n",
     baud_rates=[9600, 115200],
     timeout_ms=500,
-)
-devices = discoverer.discover()
+    response_terminator=b"\r\n",   # stop reading early once terminator arrives
+).discover()
 
-for device in devices:
-    print(f"{device.address} @ {device.info.get('baud_rate')} baud")
+for d in devices:
+    print(f"{d.address} @ {d.baud_rate} baud: {d.response}")
 ```
 
-### USB Discovery
+### USB
 
 ```python
-from dafydd import UsbDiscovery
+import dafydd
 
-# Find all USB devices with VID 0x1234
-discoverer = UsbDiscovery(vid=0x1234)
-devices = discoverer.discover()
+# Filter by vendor ID, product ID, or device class
+devices = dafydd.UsbDiscovery(vid=0x04D8).discover()
 
-for device in devices:
-    print(f"{device.address}: {device.info}")
+for d in devices:
+    print(f"{d.address}  {d.info.get('product', '')}")
+```
+
+## Streaming and Watch
+
+All three discovery classes expose `discover_streaming` (callback per result) and `watch` (hot-plug polling):
+
+```python
+import dafydd
+
+token = dafydd.CancellationToken()
+
+# Streaming — callback fires as each device is found
+dafydd.SerialDiscovery(
+    probe_command=b"*IDN?\r\n",
+    baud_rates=[9600],
+    timeout_ms=500,
+    cancellation_token=token,
+).discover_streaming(lambda d: print("found", d.address))
+
+# Watch — polls for plug/unplug events until cancelled
+import threading
+threading.Thread(
+    target=dafydd.UsbDiscovery(vid=0x04D8).watch,
+    kwargs={
+        "on_added":   lambda d: print("connected",    d.address),
+        "on_removed": lambda d: print("disconnected", d.address),
+        "interval_ms": 1000,
+    },
+    daemon=True,
+).start()
+
+# Stop from any thread
+token.cancel()
+```
+
+## Correlating USB and Serial
+
+When the same physical device appears on both a USB bus and a serial port, `correlate_usb_serial` pairs them by USB serial number:
+
+```python
+import dafydd
+
+usb     = dafydd.UsbDiscovery().discover()
+serial  = dafydd.SerialDiscovery(probe_command=b"", baud_rates=[9600], timeout_ms=100).discover()
+
+for pair in dafydd.correlate_usb_serial(usb, serial):
+    print(f"USB {pair.usb.address}  ↔  Serial {pair.serial.address}")
+```
+
+## Utilities
+
+```python
+# Auto-detect local subnets (what TcpDiscovery uses when subnets is not set)
+print(dafydd.local_subnets())   # e.g. ['192.168.1.0/24', '10.0.0.0/24']
+
+# Split a mixed list by transport
+serial_ms, usb_ms, tcp_ms = dafydd.partition_by_transport(all_matches)
 ```
 
 ## How It Works
 
-Dafydd sweeps physical transports in parallel:
+1. **Preferred-address path**: If `preferred_host` / `preferred_port` is set, try it first with a short timeout. On success, return immediately without sweeping.
+2. **Full sweep**: Enumerate available endpoints (ports, USB devices, or subnet hosts) and probe them concurrently via a Tokio `JoinSet`.
+3. **ARP / mDNS acceleration** (TCP): Hosts already in the system ARP cache or announcing via mDNS are probed before the raw subnet sweep, reducing latency for recently-seen devices.
+4. **macOS tty dedup** (Serial): Each physical port appears as both `/dev/tty.*` and `/dev/cu.*`; the blocking `tty.*` variant is filtered out automatically.
 
-1. **Preferred Address Path**: If you know a device's likely address (port, host, or device path), try it first with a short timeout
-2. **Fallback Sweep**: If the preferred address fails, enumerate all available endpoints and probe them concurrently
-3. **Async I/O**: Uses Tokio with semaphore-bounded concurrency to prevent resource exhaustion on large scans
-4. **Response Matching**: Filters results by probe command and expected response bytes
-
-## Performance
-
-Run benchmarks locally:
+## Building from Source
 
 ```bash
-cargo bench
-```
-
-See `benches/` for benchmark configurations (TCP subnet scans, serial baud sweeps, USB enumeration).
-
-## Building
-
-```bash
-# Development build
+# Development build (editable install)
 uv sync
 uv run maturin develop
 
 # Release build
 uv run maturin develop --release
 
-# Rust-only
-cargo build --release
-```
-
-## Testing
-
-```bash
-# Python tests (platform-aware, with fixtures for serial/TCP/USB simulation)
-uv run pytest tests/ -v
-
-# Rust tests and benchmarks
+# Rust-only tests
 cargo test
-cargo bench --bench tcp_scan -- --test  # Smoke test
+cargo bench
 ```
 
 ## Contributing
