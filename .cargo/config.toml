@@ -1,0 +1,9 @@
+# On macOS, PyO3 extension modules leave Python symbols unresolved at link time
+# because the Python interpreter provides them at runtime. Without this flag,
+# the macOS linker rejects the build. maturin applies this flag automatically;
+# this config makes plain `cargo build` work the same way.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]

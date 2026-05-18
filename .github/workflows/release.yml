@@ -1,0 +1,194 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Publish target'
+        required: true
+        default: testpypi
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+permissions:
+  contents: read
+
+jobs:
+  # ============================================================================
+  # Build binary wheels — one job per platform/arch, covering Python 3.11–3.13
+  # ============================================================================
+  build-wheels:
+    name: Wheels · ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: auto
+            artifact: linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            manylinux: auto
+            artifact: linux-aarch64
+          - os: macos-14          # Apple Silicon runner for arm64 native build
+            target: aarch64-apple-darwin
+            artifact: macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: windows-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || '' }}
+          # serialport and nusb link against libudev on Linux.
+          # systemd-devel provides libudev.h + the .so on RHEL-family manylinux images.
+          before-script-linux: |
+            yum install -y systemd-devel 2>/dev/null || \
+              dnf install -y systemd-devel 2>/dev/null || true
+          args: --release --out dist --interpreter 3.11 3.12 3.13
+          sccache: true
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.artifact }}
+          path: dist/*.whl
+
+  # ============================================================================
+  # Source distribution — lets users build from source if no wheel matches
+  # ============================================================================
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  # ============================================================================
+  # Smoke test — installs the pre-built wheel (not source) and validates the API
+  # ============================================================================
+  smoke-test:
+    name: Smoke test · ${{ matrix.os }} · Python ${{ matrix.python }}
+    needs: build-wheels
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: macos-14
+            python: "3.13"
+          - os: windows-latest
+            python: "3.13"
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist/
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      # --only-binary prevents pip from falling back to building the sdist
+      # (which would require Rust), so a missing wheel fails fast here.
+      - name: Install from wheel
+        shell: bash
+        run: pip install --only-binary dafydd --no-index --find-links dist dafydd
+
+      - name: API smoke test
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import dafydd
+
+          # CancellationToken lifecycle
+          ct = dafydd.CancellationToken()
+          assert not ct.is_cancelled(), "expected not cancelled on init"
+          ct.cancel()
+          assert ct.is_cancelled(), "expected cancelled after cancel()"
+          ct.reset()
+          assert not ct.is_cancelled(), "expected not cancelled after reset()"
+
+          # Transport enum identity
+          assert dafydd.Transport.Serial != dafydd.Transport.Usb
+          assert dafydd.Transport.Usb   != dafydd.Transport.Tcp
+          assert dafydd.Transport.Serial != dafydd.Transport.Tcp
+
+          # DeviceMatch construction and property accessors
+          m = dafydd.DeviceMatch(dafydd.Transport.Usb, "0x04d8:0x000a")
+          assert m.transport == dafydd.Transport.Usb
+          assert m.address   == "0x04d8:0x000a"
+          assert m.response  is None
+          assert m.vendor_id  == 0x04D8
+          assert m.product_id == 0x000A
+
+          # Correlation helpers
+          assert dafydd.correlate_usb_serial([], []) == []
+          serial_ms, usb_ms, tcp_ms = dafydd.partition_by_transport([m])
+          assert usb_ms   == [m]
+          assert serial_ms == []
+          assert tcp_ms   == []
+
+          # Live USB enumeration (validates the native extension loaded correctly)
+          results = dafydd.UsbDiscovery().discover()
+          assert isinstance(results, list)
+          print(f"USB: {len(results)} device(s) found")
+
+          print("OK")
+          EOF
+
+  # ============================================================================
+  # Publish — uses OIDC trusted publishing (no API token required)
+  # ============================================================================
+  publish:
+    name: Publish to ${{ inputs.target == 'testpypi' && 'TestPyPI' || 'PyPI' }}
+    needs: [build-wheels, sdist, smoke-test]
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    permissions:
+      id-token: write     # required for OIDC trusted publishing
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist/
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sdist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        if: inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: inputs.target == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1

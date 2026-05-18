@@ -1,0 +1,178 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================================
+  # Lint: Format, Clippy, Rustdoc, Python lints
+  # ============================================================================
+  lint:
+    name: Lint (Rust + Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Setup Python
+        run: uv python install 3.12
+
+      - name: Check Rust formatting
+        run: cargo fmt -- --check
+
+      - name: Rust clippy (lib + bins + tests, strict)
+        run: cargo clippy --lib --bins --tests -- -D warnings
+
+      - name: Rustdoc build (strict)
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
+
+      - name: Python formatting check
+        run: uv run --with ruff ruff format tests/ python/ --check
+
+      - name: Python linting
+        run: uv run --with ruff ruff check tests/ python/
+
+      - name: Python type checking
+        run: uv run --with pyright --with pytest pyright tests/ python/
+
+  # ============================================================================
+  # Test: Build and run tests on all platforms/Python versions
+  # ============================================================================
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.13"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Setup Python
+        run: |
+          uv python install ${{ matrix.python-version }}
+          uv venv --python=${{ matrix.python-version }}
+          echo "${{ github.workspace }}/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev socat
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install socat
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Build Python bindings
+        run: uv run --with maturin maturin develop --release
+
+      - name: Run Rust tests
+        run: cargo test --lib --tests
+
+      - name: Run Python tests
+        run: uv run pytest tests/ -v --tb=short
+
+  # ============================================================================
+  # Coverage: Combined Rust + Python coverage
+  # ============================================================================
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Setup Python
+        run: uv python install 3.12
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Build Python bindings
+        run: uv run --with maturin maturin develop --release
+
+      - name: Generate Rust + Python coverage
+        run: cargo llvm-cov --lib --tests --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v6
+        with:
+          files: ./lcov.info
+          fail_ci_if_error: false
+
+  # ============================================================================
+  # Audit: Check for known security vulnerabilities
+  # ============================================================================
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit --deny warnings
+
+  # ============================================================================
+  # Bench: Smoke test all benchmarks
+  # ============================================================================
+  bench-smoke:
+    name: Benchmark Smoke Test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Smoke test benchmarks
+        run: |
+          cargo bench --bench tcp_scan -- --test
+          cargo bench --bench serial_scan -- --test
+          cargo bench --bench usb_scan -- --test
