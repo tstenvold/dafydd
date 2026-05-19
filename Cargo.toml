@@ -30,8 +30,11 @@ futures-util = { version = "0.3", default-features = false }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+# `GetIpNetTable2` and `MIB_IPNET_TABLE2`/`MIB_IPNET_ROW2` live behind the
+# `Win32_NetworkManagement_Ndis` feature in windows-sys 0.59.
 windows-sys = { version = "0.59", features = [
     "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
     "Win32_Foundation",
 ] }
