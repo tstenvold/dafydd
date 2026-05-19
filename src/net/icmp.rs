@@ -52,6 +52,7 @@ pub async fn ping_sweep(hosts: Vec<Ipv4Addr>, timeout: Duration) -> Option<Vec<I
         .flatten()
 }
 
+#[allow(unsafe_code)]
 fn ping_sweep_sync(hosts: &[Ipv4Addr], timeout: Duration) -> Option<Vec<Ipv4Addr>> {
     // Returns None if we cannot open a raw socket (no privilege).
     let sock = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)).ok()?;

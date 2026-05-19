@@ -111,6 +111,8 @@ impl SerialDiscovery {
         response_filter = None,
         cancellation_token = None,
     ))]
+    // PyO3's #[new] maps directly to Python's __init__; a builder pattern would
+    // require a separate Python class, breaking the documented API contract.
     #[allow(clippy::too_many_arguments)]
     pub const fn new(
         probe_command: Option<Vec<u8>>,
@@ -249,46 +251,9 @@ impl SerialDiscovery {
         };
 
         let interval = Duration::from_millis(interval_ms.unwrap_or(2000));
-        let mut prev: Vec<DeviceMatch> = Vec::new();
-
-        loop {
-            if cancel.is_cancelled() {
-                break;
-            }
-
-            let current = self.discover(py)?;
-
-            // Compare by address only — response bytes can vary across polls
-            // for devices that include dynamic data (counters, timestamps) in
-            // their probe response, which would cause spurious add/remove events.
-            let prev_addrs: std::collections::HashSet<&str> =
-                prev.iter().map(|m| m.address.as_str()).collect();
-            let current_addrs: std::collections::HashSet<&str> =
-                current.iter().map(|m| m.address.as_str()).collect();
-
-            for m in &current {
-                if !prev_addrs.contains(m.address.as_str()) {
-                    on_added.call1(py, (m.clone(),))?;
-                }
-            }
-            for m in &prev {
-                if !current_addrs.contains(m.address.as_str()) {
-                    on_removed.call1(py, (m.clone(),))?;
-                }
-            }
-
-            prev = current;
-
-            let wake_at = std::time::Instant::now() + interval;
-            while std::time::Instant::now() < wake_at {
-                if cancel.is_cancelled() {
-                    return Ok(());
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-
-        Ok(())
+        crate::watch::poll_watch(py, cancel, interval, &on_added, &on_removed, |py| {
+            self.discover(py)
+        })
     }
 }
 
@@ -313,10 +278,10 @@ impl SerialDiscovery {
             preferred_retry_delay: Duration::from_millis(self.preferred_retry_delay_ms),
             include_bluetooth: self.include_bluetooth,
             data_bits: self.data_bits,
-            parity: self.parity.clone(),
+            parity: self.parity.as_deref().map(Arc::from),
             stop_bits: self.stop_bits,
-            flow_control: self.flow_control.clone(),
-            port_filter: self.port_filter.clone(),
+            flow_control: self.flow_control.as_deref().map(Arc::from),
+            port_filter: self.port_filter.as_deref().map(Arc::from),
             response_terminator: self.response_terminator.as_deref().map(Arc::from),
             response_filter: self.response_filter.as_deref().map(Arc::from),
             cancel: self.cancellation_token.clone(),
@@ -334,10 +299,10 @@ struct DiscoveryConfig {
     preferred_retry_delay: Duration,
     include_bluetooth: bool,
     data_bits: Option<u8>,
-    parity: Option<String>,
+    parity: Option<Arc<str>>,
     stop_bits: Option<u8>,
-    flow_control: Option<String>,
-    port_filter: Option<String>,
+    flow_control: Option<Arc<str>>,
+    port_filter: Option<Arc<str>>,
     response_terminator: Option<Arc<[u8]>>,
     response_filter: Option<Arc<[u8]>>,
     cancel: Option<CancellationToken>,

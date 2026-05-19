@@ -9,6 +9,8 @@ use pyo3::prelude::*;
 use std::collections::HashMap;
 
 /// Apply VID/PID/string/class filters to a USB device info struct.
+// Each argument is an independent optional filter; collapsing them into a struct
+// would force callers to construct a filter object for every call site.
 #[allow(clippy::too_many_arguments)]
 fn apply_filters(
     device: &nusb::DeviceInfo,
@@ -155,7 +157,7 @@ impl UsbDiscovery {
             let inner = || -> crate::error::Result<Vec<DeviceMatch>> {
                 let devices = runtime()
                     .block_on(async { nusb::list_devices().await })
-                    .map_err(|e| DafyddError::Usb(e.to_string()))?;
+                    .map_err(DafyddError::from)?;
                 Ok(devices
                     .filter(|d| {
                         apply_filters(
@@ -198,7 +200,7 @@ impl UsbDiscovery {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let devices = nusb::list_devices()
                 .await
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+                .map_err(|e| PyErr::from(DafyddError::from(e)))?;
             Ok(devices
                 .filter(|d| {
                     apply_filters(
@@ -228,11 +230,7 @@ impl UsbDiscovery {
         py: Python<'_>,
         callback: Py<PyAny>,
     ) -> PyResult<Vec<DeviceMatch>> {
-        let matches = self.discover(py)?;
-        for m in &matches {
-            callback.call1(py, (m.clone(),))?;
-        }
-        Ok(matches)
+        crate::streaming::run_streaming(py, &callback, |py| self.discover(py))
     }
 
     /// Watch for USB devices appearing or disappearing using OS-level hotplug events.
@@ -273,8 +271,7 @@ impl UsbDiscovery {
         let sn_filter = self.serial_number.clone();
         let class_filter = self.device_class;
 
-        let watcher = nusb::watch_devices()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        let watcher = nusb::watch_devices().map_err(|e| PyErr::from(DafyddError::from(e)))?;
 
         // Channel: background OS-event thread → Python main thread.
         let (event_tx, event_rx) = std::sync::mpsc::sync_channel::<nusb::hotplug::HotplugEvent>(64);

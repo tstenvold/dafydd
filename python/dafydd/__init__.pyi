@@ -90,11 +90,19 @@ class DeviceMatch:
         """Return keyword arguments for the matching python-bus factory function."""
         ...
 
-def local_subnets() -> list[str]:
+def local_subnets(max_prefix: int = 24) -> list[str]:
     """Return CIDR strings for all active non-loopback IPv4 interfaces.
 
     This is the same list TcpDiscovery uses when no subnets are configured.
     Link-local (169.254.x.x) and loopback addresses are excluded.
+
+    Args:
+        max_prefix: Broadest subnet prefix auto-detection will widen to.
+            Defaults to 24 (up to 254 hosts). Must be in [16, 32].
+
+    Raises:
+        ValueError: If max_prefix is outside the range [16, 32].
+        TypeError: If max_prefix is negative or not an integer.
     """
     ...
 

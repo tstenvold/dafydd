@@ -168,9 +168,9 @@ impl DeviceMatch {
 
     /// For TCP transport: hostname or IP address part of the connection address.
     #[getter]
-    fn host(&self) -> Option<String> {
+    fn host(&self) -> Option<&str> {
         match self.transport {
-            Transport::Tcp => self.address.rsplit_once(':').map(|(h, _)| h.to_string()),
+            Transport::Tcp => self.address.rsplit_once(':').map(|(h, _)| h),
             _ => None,
         }
     }
@@ -384,6 +384,52 @@ mod tests {
     }
 
     #[test]
+    fn test_hash_eq_invariant() {
+        // Equal objects must have identical hashes.
+        let mut info = HashMap::new();
+        info.insert("key".to_string(), "value".to_string());
+        let a = DeviceMatch {
+            transport: Transport::Tcp,
+            address: "10.0.0.1:502".to_string(),
+            response: Some(vec![1, 2, 3]),
+            info: info.clone(),
+        };
+        let b = DeviceMatch {
+            transport: Transport::Tcp,
+            address: "10.0.0.1:502".to_string(),
+            response: Some(vec![1, 2, 3]),
+            info: info.clone(),
+        };
+        assert!(a.__eq__(&b), "identical DeviceMatch must be equal");
+        assert_eq!(
+            a.__hash__(),
+            b.__hash__(),
+            "equal DeviceMatch must have equal hashes"
+        );
+
+        // Same transport/address/response but different info → NOT equal.
+        let mut other_info = HashMap::new();
+        other_info.insert("key".to_string(), "different".to_string());
+        let c = DeviceMatch {
+            transport: Transport::Tcp,
+            address: "10.0.0.1:502".to_string(),
+            response: Some(vec![1, 2, 3]),
+            info: other_info,
+        };
+        assert!(
+            !a.__eq__(&c),
+            "DeviceMatch with different info must not be equal"
+        );
+
+        // Hash intentionally skips `info`, so objects with different info still share a hash.
+        assert_eq!(
+            a.__hash__(),
+            c.__hash__(),
+            "DeviceMatch with different info must still have equal hashes (info excluded from hash)"
+        );
+    }
+
+    #[test]
     fn test_device_match_sort() {
         let dm1 = DeviceMatch {
             transport: Transport::Serial,
@@ -399,5 +445,108 @@ mod tests {
         };
         assert!(dm1.__lt__(&dm2));
         assert!(!dm2.__lt__(&dm1));
+    }
+
+    #[test]
+    fn test_tcp_host_and_port_getters() {
+        let tcp = DeviceMatch {
+            transport: Transport::Tcp,
+            address: "10.0.0.1:502".to_string(),
+            response: None,
+            info: HashMap::new(),
+        };
+        assert_eq!(tcp.host(), Some("10.0.0.1"));
+        assert_eq!(tcp.port(), Some(502));
+
+        let serial = DeviceMatch {
+            transport: Transport::Serial,
+            address: "/dev/ttyUSB0".to_string(),
+            response: None,
+            info: HashMap::new(),
+        };
+        assert_eq!(serial.host(), None);
+        assert_eq!(serial.port(), None);
+
+        let usb = DeviceMatch {
+            transport: Transport::Usb,
+            address: "0x04d8:0x00dd".to_string(),
+            response: None,
+            info: HashMap::new(),
+        };
+        assert_eq!(usb.host(), None);
+        assert_eq!(usb.port(), None);
+    }
+
+    #[test]
+    fn test_usb_vendor_product_getters() {
+        let usb = DeviceMatch {
+            transport: Transport::Usb,
+            address: "0x04d8:0x00dd".to_string(),
+            response: None,
+            info: HashMap::new(),
+        };
+        assert_eq!(usb.vendor_id(), Some(0x04d8));
+        assert_eq!(usb.product_id(), Some(0x00dd));
+
+        let tcp = DeviceMatch {
+            transport: Transport::Tcp,
+            address: "10.0.0.1:502".to_string(),
+            response: None,
+            info: HashMap::new(),
+        };
+        assert_eq!(tcp.vendor_id(), None);
+        assert_eq!(tcp.product_id(), None);
+    }
+
+    #[test]
+    fn test_usb_is_hid() {
+        let mut info_hid = HashMap::new();
+        info_hid.insert("device_class".to_string(), "3".to_string());
+        let hid = DeviceMatch {
+            transport: Transport::Usb,
+            address: "0x04d8:0x00dd".to_string(),
+            response: None,
+            info: info_hid,
+        };
+        assert!(hid.is_hid());
+
+        let mut info_other = HashMap::new();
+        info_other.insert("device_class".to_string(), "0".to_string());
+        let not_hid = DeviceMatch {
+            transport: Transport::Usb,
+            address: "0x04d8:0x00dd".to_string(),
+            response: None,
+            info: info_other,
+        };
+        assert!(!not_hid.is_hid());
+
+        let tcp = DeviceMatch {
+            transport: Transport::Tcp,
+            address: "10.0.0.1:502".to_string(),
+            response: None,
+            info: HashMap::new(),
+        };
+        assert!(!tcp.is_hid());
+    }
+
+    #[test]
+    fn test_serial_baud_rate_getter() {
+        let mut info = HashMap::new();
+        info.insert("baud_rate".to_string(), "115200".to_string());
+        let with_baud = DeviceMatch {
+            transport: Transport::Serial,
+            address: "/dev/ttyUSB0".to_string(),
+            response: None,
+            info,
+        };
+        assert_eq!(with_baud.baud_rate(), Some(115_200));
+
+        let without_baud = DeviceMatch {
+            transport: Transport::Serial,
+            address: "/dev/ttyUSB0".to_string(),
+            response: None,
+            info: HashMap::new(),
+        };
+        assert_eq!(without_baud.baud_rate(), None);
     }
 }

@@ -12,8 +12,10 @@ pub mod runtime;
 pub mod types;
 
 pub mod serial;
+pub mod streaming;
 pub mod tcp;
 pub mod usb;
+pub mod watch;
 
 use pyo3::prelude::*;
 
@@ -22,7 +24,8 @@ use pyo3::prelude::*;
 fn dafydd(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Eagerly spin up the Tokio runtime at import time so the first
     // `.discover()` call incurs no startup latency.
-    let _ = runtime::runtime();
+    runtime::try_init_runtime()
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
     m.add_class::<types::Transport>()?;
     m.add_class::<types::DeviceMatch>()?;

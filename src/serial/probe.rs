@@ -260,9 +260,9 @@ pub async fn probe_port_all_bauds(
     probe: Arc<[u8]>,
     read_timeout: Duration,
     data_bits: Option<u8>,
-    parity: Option<String>,
+    parity: Option<Arc<str>>,
     stop_bits: Option<u8>,
-    flow_control: Option<String>,
+    flow_control: Option<Arc<str>>,
     cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     response_terminator: Option<Arc<[u8]>>,
     response_filter: Option<Arc<[u8]>>,
@@ -322,8 +322,8 @@ pub async fn probe_port_all_bauds(
             }
         }
         if let Some(ref p) = parity {
-            if p != "none" {
-                info.insert("parity".to_owned(), p.clone());
+            if p.as_ref() != "none" {
+                info.insert("parity".to_owned(), p.to_string());
             }
         }
         if let Some(sb) = stop_bits {
@@ -332,8 +332,8 @@ pub async fn probe_port_all_bauds(
             }
         }
         if let Some(ref fc) = flow_control {
-            if fc != "none" {
-                info.insert("flow_control".to_owned(), fc.clone());
+            if fc.as_ref() != "none" {
+                info.insert("flow_control".to_owned(), fc.to_string());
             }
         }
         return Ok(Some(DeviceMatch {
@@ -364,9 +364,9 @@ fn probe_port_all_bauds_sync(
     probe: &Arc<[u8]>,
     read_timeout: Duration,
     data_bits: Option<u8>,
-    parity: Option<&String>,
+    parity: Option<&Arc<str>>,
     stop_bits: Option<u8>,
-    flow_control: Option<&String>,
+    flow_control: Option<&Arc<str>>,
     cancel: Option<&Arc<std::sync::atomic::AtomicBool>>,
     response_terminator: Option<&Arc<[u8]>>,
     response_filter: Option<&Arc<[u8]>>,
@@ -382,9 +382,9 @@ fn probe_port_all_bauds_sync(
         &port,
         first_baud,
         data_bits,
-        parity.map(String::as_str),
+        parity.map(std::convert::AsRef::as_ref),
         stop_bits,
-        flow_control.map(String::as_str),
+        flow_control.map(std::convert::AsRef::as_ref),
     )?
     .timeout(read_timeout)
     .open()
@@ -444,8 +444,8 @@ fn probe_port_all_bauds_sync(
             }
         }
         if let Some(p) = parity {
-            if p != "none" {
-                info.insert("parity".to_owned(), p.clone());
+            if p.as_ref() != "none" {
+                info.insert("parity".to_owned(), p.to_string());
             }
         }
         if let Some(sb) = stop_bits {
@@ -454,8 +454,8 @@ fn probe_port_all_bauds_sync(
             }
         }
         if let Some(fc) = flow_control {
-            if fc != "none" {
-                info.insert("flow_control".to_owned(), fc.clone());
+            if fc.as_ref() != "none" {
+                info.insert("flow_control".to_owned(), fc.to_string());
             }
         }
         return Ok(Some(DeviceMatch {
@@ -500,9 +500,9 @@ pub async fn sweep_all_ports(
     read_timeout: Duration,
     include_bluetooth: bool,
     data_bits: Option<u8>,
-    parity: Option<String>,
+    parity: Option<Arc<str>>,
     stop_bits: Option<u8>,
-    flow_control: Option<String>,
+    flow_control: Option<Arc<str>>,
     port_filter: Option<&str>,
     cancel: Option<&crate::types::CancellationToken>,
     tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,

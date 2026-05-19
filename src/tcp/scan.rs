@@ -104,6 +104,7 @@ pub fn local_subnets(max_prefix: u8) -> Result<Vec<String>> {
 /// — the kernel performs a graceful FIN close (the polite default). Also
 /// sets `TCP_NODELAY` so probe bytes are sent in the first segment. On
 /// Linux with the `tcp-fast-open` feature, `TCP_FASTOPEN_CONNECT` is set.
+#[allow(unsafe_code)]
 async fn connect_with_opts(
     addr: SocketAddr,
     connect_timeout: Duration,
@@ -156,6 +157,7 @@ async fn connect_with_opts(
 /// The server must also support TFO; if it does not, the kernel falls back
 /// to a normal three-way handshake transparently.
 #[cfg(all(target_os = "linux", feature = "tcp-fast-open"))]
+#[allow(unsafe_code)]
 fn set_tcp_fast_open_connect(socket: &TcpSocket) {
     use socket2::Socket;
     use std::os::fd::AsRawFd;

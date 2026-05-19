@@ -14,8 +14,8 @@ pub enum DafyddError {
     Serial(#[from] serialport::Error),
 
     /// USB enumeration failure.
-    #[error("usb: {0}")]
-    Usb(String),
+    #[error(transparent)]
+    Usb(#[from] nusb::Error),
 
     /// Generic I/O error (TCP connect, read/write).
     #[error("io: {0}")]

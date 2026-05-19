@@ -20,25 +20,7 @@ every embedded / instrument-control codebase asks:
    Try the expected location first with a short timeout. On failure, fall
    back to a probe-and-identify sweep — and return the *actual* location.
 
-Same `DeviceMatch` shape comes back regardless of transport, so the calling
-code that consumes it (e.g. `python-bus`) stays uniform across USB, Serial,
-and TCP devices.
-
-## Why this exists
-
-Most Python projects re-write this loop by hand: enumerate ports, open each
-one, send `*IDN?`, match the response substring, give up. dafydd does it in
-Rust with proper concurrency, pure-Rust ARP cache reads, and a unified result
-shape — typically **~100× faster than a hand-rolled `asyncio` sweep** for the
-"find this device on the LAN" case (see [benches/](benches/README.md)).
-
-| Library | Serial probe-and-identify | USB filter | TCP `/24` sweep |
-|---|---|---|---|
-| **dafydd** | ✅ unified API | ✅ unified API | ✅ ~100 ms (priority + concurrency) |
-| `pyserial` + manual loop | hand-rolled | n/a | n/a |
-| `pyusb` / `nusb` | n/a | ✅ enumerate only | n/a |
-| `python-nmap` | n/a | n/a | needs `nmap` binary + root |
-| `scapy` SYN scan | n/a | n/a | ~30 s, pure Python |
+Same `DeviceMatch` shape comes back regardless of transport, so that it stays uniform across USB, Serial, and TCP devices.
 
 ## Installation
 

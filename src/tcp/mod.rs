@@ -331,52 +331,17 @@ impl TcpDiscovery {
         };
 
         let interval = Duration::from_millis(interval_ms.unwrap_or(30_000));
-        let mut prev: Vec<DeviceMatch> = Vec::new();
-
-        loop {
-            if cancel.is_cancelled() {
-                break;
-            }
-
-            let current = self.discover(py)?;
-
-            // Compare by address only — response bytes can vary across polls
-            // for devices that include dynamic data in their probe response,
-            // causing spurious add/remove events with response-based equality.
-            let prev_addrs: HashSet<&str> = prev.iter().map(|m| m.address.as_str()).collect();
-            let current_addrs: HashSet<&str> = current.iter().map(|m| m.address.as_str()).collect();
-
-            for m in &current {
-                if !prev_addrs.contains(m.address.as_str()) {
-                    on_added.call1(py, (m.clone(),))?;
-                }
-            }
-            for m in &prev {
-                if !current_addrs.contains(m.address.as_str()) {
-                    on_removed.call1(py, (m.clone(),))?;
-                }
-            }
-
-            prev = current;
-
-            let wake_at = std::time::Instant::now() + interval;
-            while std::time::Instant::now() < wake_at {
-                if cancel.is_cancelled() {
-                    return Ok(());
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-
-        Ok(())
+        crate::watch::poll_watch(py, cancel, interval, &on_added, &on_removed, |py| {
+            self.discover(py)
+        })
     }
 }
 
 /// Snapshot of `TcpDiscovery` config cloneable into async tasks.
 struct DiscoveryParams {
-    ports: Vec<u16>,
+    ports: Arc<[u16]>,
     subnets: Vec<String>,
-    probe: Option<Vec<u8>>,
+    probe: Option<Arc<[u8]>>,
     connect_timeout: Duration,
     io_timeout: Duration,
     max_concurrent: usize,
@@ -397,9 +362,9 @@ struct DiscoveryParams {
 impl TcpDiscovery {
     fn params(&self) -> DiscoveryParams {
         DiscoveryParams {
-            ports: self.ports.clone(),
+            ports: Arc::from(self.ports.as_slice()),
             subnets: self.subnets.clone(),
-            probe: self.probe_command.clone(),
+            probe: self.probe_command.as_deref().map(Arc::from),
             connect_timeout: Duration::from_millis(self.connect_timeout_ms),
             io_timeout: Duration::from_millis(self.io_timeout_ms),
             max_concurrent: self.max_concurrent,
@@ -421,9 +386,83 @@ impl TcpDiscovery {
     }
 }
 
+/// Handle the preferred-host fast-path with configurable retry.
+///
+/// Returns `Some(matches)` when the preferred host responds (caller should
+/// return early). Returns `None` to fall through to the subnet sweep.
+async fn try_preferred(
+    p: &DiscoveryParams,
+    filter: Option<Arc<[u8]>>,
+    tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,
+) -> crate::error::Result<Option<Vec<DeviceMatch>>> {
+    let Some(ref host) = p.preferred else {
+        return Ok(None);
+    };
+    let cancel = p.cancel.as_ref();
+    for attempt in 0..=p.preferred_retry {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            return Ok(Some(Vec::new()));
+        }
+        let matches = scan::probe_host(
+            host,
+            p.ports.as_ref(),
+            p.probe.as_deref(),
+            p.connect_timeout,
+            p.io_timeout,
+            filter.clone(),
+            p.linger,
+        )
+        .await?;
+        if !matches.is_empty() {
+            if let Some(sender) = tx {
+                for m in &matches {
+                    let _ = sender.try_send(m.clone());
+                }
+            }
+            return Ok(Some(matches));
+        }
+        if attempt < p.preferred_retry {
+            tokio::time::sleep(p.preferred_retry_delay).await;
+        }
+    }
+    Ok(None)
+}
+
+/// Probe a list of IPs, tag each match with `source`, forward to `tx`, and
+/// return all matches.
+async fn probe_named_hosts(
+    ips: Vec<std::net::Ipv4Addr>,
+    source: &'static str,
+    p: &DiscoveryParams,
+    filter: Option<Arc<[u8]>>,
+    tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,
+) -> crate::error::Result<Vec<DeviceMatch>> {
+    let mut matches = Vec::new();
+    for ip in ips {
+        let host_str = ip.to_string();
+        let found = scan::probe_host(
+            &host_str,
+            p.ports.as_ref(),
+            p.probe.as_deref(),
+            p.connect_timeout,
+            p.io_timeout,
+            filter.clone(),
+            p.linger,
+        )
+        .await?;
+        for mut m in found {
+            m.info.insert("source".to_owned(), source.to_owned());
+            if let Some(sender) = tx {
+                let _ = sender.try_send(m.clone());
+            }
+            matches.push(m);
+        }
+    }
+    Ok(matches)
+}
+
 /// Core async discovery logic shared between `discover`, `discover_streaming`,
 /// and `discover_async`.
-#[allow(clippy::too_many_lines)]
 async fn run_discovery(
     p: DiscoveryParams,
     tx: Option<&std::sync::mpsc::SyncSender<DeviceMatch>>,
@@ -431,88 +470,21 @@ async fn run_discovery(
     let cancel = p.cancel.as_ref();
     let filter: Option<Arc<[u8]>> = p.response_filter.as_deref().map(Arc::from);
 
-    // Preferred host fast-path with configurable retry.
-    if let Some(ref host) = p.preferred {
-        for attempt in 0..=p.preferred_retry {
-            if cancel.is_some_and(CancellationToken::is_cancelled) {
-                return Ok(Vec::new());
-            }
-            let matches = scan::probe_host(
-                host,
-                &p.ports,
-                p.probe.as_deref(),
-                p.connect_timeout,
-                p.io_timeout,
-                filter.clone(),
-                p.linger,
-            )
-            .await?;
-            if !matches.is_empty() {
-                if let Some(sender) = tx {
-                    for m in &matches {
-                        let _ = sender.try_send(m.clone());
-                    }
-                }
-                return Ok(matches);
-            }
-            if attempt < p.preferred_retry {
-                tokio::time::sleep(p.preferred_retry_delay).await;
-            }
-        }
+    if let Some(matches) = try_preferred(&p, filter.clone(), tx).await? {
+        return Ok(matches);
     }
 
-    // mDNS fast-path: send a DNS-SD query and probe responding devices.
-    let mut fast_matches: Vec<DeviceMatch> = Vec::new();
+    let mut all_matches = Vec::new();
+
     if p.use_mdns {
-        let mdns_hosts = crate::net::mdns::active_mdns_hosts(p.mdns_timeout).await;
-        for ip in mdns_hosts {
-            let host_str = ip.to_string();
-            let found = scan::probe_host(
-                &host_str,
-                &p.ports,
-                p.probe.as_deref(),
-                p.connect_timeout,
-                p.io_timeout,
-                filter.clone(),
-                p.linger,
-            )
-            .await?;
-            for mut m in found {
-                m.info.insert("source".to_owned(), "mdns".to_owned());
-                if let Some(sender) = tx {
-                    let _ = sender.try_send(m.clone());
-                }
-                fast_matches.push(m);
-            }
-        }
+        let h = crate::net::mdns::active_mdns_hosts(p.mdns_timeout).await;
+        all_matches.extend(probe_named_hosts(h, "mdns", &p, filter.clone(), tx).await?);
     }
 
-    // SSDP fast-path: send an M-SEARCH query and probe UPnP-responding devices.
     if p.use_ssdp {
-        let ssdp_hosts = crate::net::ssdp::active_ssdp_hosts(p.ssdp_timeout).await;
-        for ip in ssdp_hosts {
-            let host_str = ip.to_string();
-            let found = scan::probe_host(
-                &host_str,
-                &p.ports,
-                p.probe.as_deref(),
-                p.connect_timeout,
-                p.io_timeout,
-                filter.clone(),
-                p.linger,
-            )
-            .await?;
-            for mut m in found {
-                m.info.insert("source".to_owned(), "ssdp".to_owned());
-                if let Some(sender) = tx {
-                    let _ = sender.try_send(m.clone());
-                }
-                fast_matches.push(m);
-            }
-        }
+        let h = crate::net::ssdp::active_ssdp_hosts(p.ssdp_timeout).await;
+        all_matches.extend(probe_named_hosts(h, "ssdp", &p, filter.clone(), tx).await?);
     }
-
-    let mut all_matches = fast_matches;
 
     // Subnet sweep (the main path for unknown device locations).
     let targets = if p.subnets.is_empty() {
@@ -523,7 +495,7 @@ async fn run_discovery(
 
     let sweep_matches = scan::scan_subnets(
         &targets,
-        &p.ports,
+        p.ports.as_ref(),
         p.probe.as_deref(),
         p.connect_timeout,
         p.io_timeout,

@@ -143,6 +143,7 @@ mod os {
         // ... more fields follow, we don't read them
     }
 
+    #[allow(unsafe_code)]
     pub(super) fn arp_cache_hosts() -> Vec<(Ipv4Addr, MacAddr)> {
         // sysctl args: {CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_LLINFO}
         let mut mib: [c_int; 6] = [CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_LLINFO];
@@ -192,6 +193,7 @@ mod os {
     /// All struct reads use `ptr::read_unaligned` because the routing-message
     /// buffer is `Vec<u8>`-aligned (i.e. 1 byte), not the natural alignment of
     /// the C structs we are decoding.
+    #[allow(unsafe_code)]
     fn parse_rt_buffer(buf: &[u8]) -> Vec<(Ipv4Addr, MacAddr)> {
         let mut out: Vec<(Ipv4Addr, MacAddr)> = Vec::new();
         let mut offset: usize = 0;
@@ -223,6 +225,7 @@ mod os {
     /// end of the full header. We read the first `sockaddr_in` (destination
     /// IPv4) and the *next* sockaddr after it, which is the `sockaddr_dl`
     /// gateway containing the MAC. Returns `None` if the format is unexpected.
+    #[allow(unsafe_code)]
     fn parse_one_msg(msg: &[u8]) -> Option<(Ipv4Addr, MacAddr)> {
         // Step past the *full* header. libc::rt_msghdr is authoritative for
         // size on the current platform/architecture.
@@ -324,6 +327,7 @@ mod os {
     const NL_NS_INCOMPLETE: i32 = 1;
     const NL_NS_UNREACHABLE: i32 = 6;
 
+    #[allow(unsafe_code)]
     pub(super) fn arp_cache_hosts() -> Vec<(Ipv4Addr, MacAddr)> {
         let mut table: *mut MIB_IPNET_TABLE2 = std::ptr::null_mut();
         // SAFETY: GetIpNetTable2 allocates a table the caller frees with
@@ -348,6 +352,7 @@ mod os {
     /// # Safety
     /// `table` must point to a valid `MIB_IPNET_TABLE2` returned by
     /// `GetIpNetTable2` with at least `NumEntries` rows.
+    #[allow(unsafe_code)]
     unsafe fn parse_table(table: *const MIB_IPNET_TABLE2) -> Vec<(Ipv4Addr, MacAddr)> {
         let count = (*table).NumEntries as usize;
         let mut out = Vec::with_capacity(count);

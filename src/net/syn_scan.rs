@@ -114,7 +114,7 @@ mod os {
     // `wrapping_add` / `wrapping_mul` next to each cast spells the intent.
     // Going through `try_from` would force a branch for the practically-never
     // case of more than 65 535 targets.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation, unsafe_code)]
     pub(super) fn syn_scan(
         src_ip: Ipv4Addr,
         targets: &[(Ipv4Addr, u16)],
